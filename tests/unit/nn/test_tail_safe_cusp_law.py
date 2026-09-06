@@ -243,6 +243,38 @@ class TestTrainability:
         assert law.raw_kappa.grad.abs().item() > 0.0
         assert law.curvature_coefficient(charges).abs().item() == pytest.approx(0.0, abs=1e-12)
 
+    def test_the_range_gradient_really_does_die_at_the_degenerate_point(self) -> None:
+        """Discriminating control for the ``grad > 0`` assertions above.
+
+        Those assertions are worth nothing unless some configuration makes them
+        false, and this is it. ``c = d (Z - kappa)`` and its ``d``-derivative
+        both carry a factor of ``(Z - kappa)``, so at ``kappa = Z`` the range
+        receives no gradient at all -- the exact analogue of the predecessor's
+        ``c = 0`` trap, which is why the shipped config sits at 1.99 rather
+        than 2.
+
+        Stated RELATIVELY against the healthy configuration. The degenerate
+        value is zero only up to the softplus round-trip's round-off, so an
+        exact-zero assertion would fire or not by coin flip.
+        """
+
+        charges = torch.tensor(2.0, dtype=torch.float64)
+        radius = torch.tensor(0.8, dtype=torch.float64)
+
+        healthy = _law(tail_slope=1.99)
+        healthy.value(radius, charges).backward()
+
+        degenerate = _law(tail_slope=2.0)  # kappa == Z
+        degenerate.value(radius, charges).backward()
+
+        live = healthy.raw_range.grad.abs().item()
+        dead = degenerate.raw_range.grad.abs().item()
+        assert live > 0.0
+        assert dead < live * 1e-6, (
+            f"raw_range should receive no gradient at kappa == Z, got {dead} "
+            f"against {live} at kappa = 1.99"
+        )
+
     def test_frozen_contributes_no_checkpoint_state(self) -> None:
         assert set(_law(trainable=False).state_dict()) == set()
 

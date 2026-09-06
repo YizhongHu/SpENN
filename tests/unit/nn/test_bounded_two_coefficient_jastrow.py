@@ -292,6 +292,38 @@ class TestTrainability:
             assert torch.isfinite(parameter.grad).all()
             assert parameter.grad.abs().item() > 0.0, f"{name} sits at a zero-gradient point"
 
+    def test_a_configuration_that_really_does_kill_the_gradient(self) -> None:
+        """Discriminating control for the assertion above.
+
+        ``grad > 0`` says nothing on its own unless some configuration makes it
+        false; otherwise it would pass for any nonzero number the autograd
+        engine happened to produce. Coincident electrons are that
+        configuration: every ``q_ij`` is exactly zero, so both terms and both
+        derivatives vanish and neither coefficient can learn from such a
+        sample.
+
+        Compared RELATIVELY against the healthy configuration rather than
+        against an absolute floor. The degenerate value is zero up to
+        round-off, and an exact-zero assertion on a computed quantity fires or
+        not by coin flip.
+        """
+
+        healthy = BoundedTwoCoefficientJastrow(length=LENGTH)
+        healthy(_batch([[[0.3, -0.7, 0.2], [-0.4, 0.1, 0.9]]])).sum().backward()
+
+        degenerate = BoundedTwoCoefficientJastrow(length=LENGTH)
+        point = [0.4, -0.2, 0.6]
+        degenerate(_batch([[point, point]])).sum().backward()
+
+        for name in ("theta_s", "theta_t"):
+            live = getattr(healthy, name).grad.abs().item()
+            dead = getattr(degenerate, name).grad.abs().item()
+            assert live > 0.0
+            assert dead < live * 1e-6, (
+                f"{name}: coincident electrons should carry no gradient, got "
+                f"{dead} against {live} at a generic configuration"
+            )
+
     def test_trainable_contributes_state_and_frozen_contributes_none(self) -> None:
         """Frozen coordinates are non-persistent buffers, matching the cusp laws."""
 

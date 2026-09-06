@@ -497,6 +497,37 @@ class TailSafeElectronNucleusCuspLaw(nn.Module, ElectronNucleusCuspLaw):
     reported as one; the learned quantity is ``kappa`` itself, which is free
     above the floor.
 
+    **Identifiability of the range parameter.** Differentiating the value with
+    respect to ``d`` gives, after the two terms combine,
+
+    .. math::
+
+        \frac{\partial v_A}{\partial d}
+            = (Z_A - \kappa) \frac{r^2}{(1 + d r)^2}
+            = \frac{c_A}{d} \frac{r^2}{(1 + d r)^2},
+
+    since ``c_A = d (Z_A - kappa)`` by definition. Every path by which ``d``
+    reaches the value carries that factor, so **the gradient on the range
+    parameter is proportional to** ``c/d``.
+
+    This is an IDENTIFIABILITY LIMIT, not a defect and not a property of any
+    particular ``kappa``. As ``c -> 0`` the term ``c r^2 / (1 + d r)`` vanishes
+    and ``d`` is shaping something that is not there, so a small curvature
+    coefficient and a well-conditioned range cannot be had at the same time --
+    in this parametrization or in the ``(c, d)`` one, which is the same
+    function. Anything that "fixes" the conditioning by moving ``kappa`` has
+    moved ``c``, because they are the same fact.
+
+    Concretely, the he-importance control level sits at ``c/d = 0.01``, so
+    ``d``'s gradient there is a hundredth of its value at ``c/d = 1``. That
+    factor is exact. What it implies for LEARNABILITY is a separate and
+    unmeasured question: `torch.optim.Adam` divides by ``sqrt(v)`` and is
+    scale-invariant per parameter in the deterministic limit, so a uniformly
+    smaller gradient does not give a proportionally smaller step. The real
+    exposure is signal-to-noise -- a suppressed signal against unchanged
+    sampling noise makes ``d`` random-walk rather than descend -- and no
+    measurement here establishes where that boundary lies.
+
     **Migration is refused, structurally.** This class stores ``raw_range`` and
     ``raw_kappa``. `CurvatureElectronNucleusCuspLaw` stores
     ``raw_curvature_coefficient`` and ``raw_curvature_range``. The key sets are
