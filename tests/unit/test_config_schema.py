@@ -289,6 +289,62 @@ class TestNestedForbiddenResolvers:
         assert [r for r in rejections if r.rule == "forbidden-resolver"] == []
 
 
+class TestEscapedInterpolations:
+    """An escaped opener runs no resolver, so reporting one is a FALSE refusal.
+
+    EVERY EXPECTATION BELOW WAS MEASURED AGAINST OMEGACONF, not read off its
+    documentation and not reasoned from the syntax. Resolving each raw string
+    gave:
+
+    - ``\\${oc.env:VAR,0}`` -> the literal text ``${oc.env:VAR,0}``; the
+      environment is never touched.
+    - ``${oc.select:missing,"\\${oc.env:VAR,0}"}`` -> the same literal text;
+      still no environment read.
+    - ``\\\\${oc.env:VAR}`` -> ``\\7`` with the variable set. An EVEN number of
+      backslashes is an escaped BACKSLASH followed by a REAL interpolation, so
+      parity is the test rather than presence.
+    - ``\\${oc.select:a,${oc.env:VAR}}`` -> ``${oc.select:a,7}``. The outer is
+      literal text and the INNER RAN.
+
+    That last one is why the walker resumes just past the escaped opener rather
+    than past the whole escaped expression. A fix that skipped to the closing
+    brace would pass every other arm here and silently admit a live
+    ``oc.env``.
+    """
+
+    def test_an_escaped_opener_yields_nothing(self) -> None:
+        assert list(iter_interpolations(r"\${oc.env:VAR,0}")) == []
+
+    def test_an_escaped_opener_inside_a_real_one_is_not_reported(self) -> None:
+        found = list(iter_interpolations(r'${oc.select:missing,"\${oc.env:VAR,0}"}'))
+        assert found == [r'oc.select:missing,"\${oc.env:VAR,0}"']
+
+    def test_a_real_interpolation_inside_an_escaped_one_is_still_found(self) -> None:
+        """The arm that separates a correct fix from a plausible one."""
+
+        assert list(iter_interpolations(r"\${oc.select:a,${oc.env:VAR}}")) == ["oc.env:VAR"]
+
+    def test_an_escaped_backslash_leaves_a_real_interpolation(self) -> None:
+        assert list(iter_interpolations("\\\\${oc.env:VAR}")) == ["oc.env:VAR"]
+
+    def test_the_policy_accepts_an_escaped_forbidden_resolver(self) -> None:
+        """The over-restriction control at policy level.
+
+        This is a REAL refusal the first version of this rule produced: a config
+        carrying an escaped, literal, never-executed ``oc.env`` could not be
+        written at all. Over-restriction does not fail a test, it fails a run.
+        """
+
+        raw = {"model": {"note": r'${oc.select:missing,"\${oc.env:VAR,0}"}'}}
+        rejections = sweep(raw, {"model": {"note": "x"}}, POLICY)
+        assert [r for r in rejections if r.rule == "forbidden-resolver"] == []
+
+    def test_the_policy_still_refuses_a_live_resolver_inside_an_escaped_one(self) -> None:
+        raw = {"model": {"note": r"\${oc.select:a,${oc.env:VAR}}"}}
+        rejections = sweep(raw, {"model": {"note": "x"}}, POLICY)
+        assert any(r.rule == "forbidden-resolver" for r in rejections)
+
+
 class TestUncheckableResolvers:
     """A resolver whose NAME is built by another interpolation.
 

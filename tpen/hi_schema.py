@@ -192,8 +192,11 @@ STOP_RULE_SURFACE = ForbiddenSurface(
 
 # The evaluation manifest's module, named as a STRING and deliberately NOT
 # imported. Importing it here would put ``tpen.hi_manifest`` on the training
-# path -- the exact reachability ``tests/unit/test_hi_reference_separation.py``
-# asserts is absent -- so the firewall would breach the invariant it enforces.
+# path as a DIRECT import, which is exactly what
+# ``tests/unit/test_hi_reference_separation.py`` censuses -- so the firewall
+# would breach the invariant it enforces. Said as "direct import" rather than
+# "reachability" on purpose: that test is a direct-import census and does not
+# establish reachability in general.
 # That test carries its own copy of this name and a control asserts the two
 # agree, because a silent divergence would leave the rule below pointing at a
 # module nobody loads.
@@ -594,11 +597,25 @@ def _sweep_target_values(resolved_tree: Any) -> list[Rejection]:
     ``"${...}"`` with nothing to compare. The key-side sweeps run on both trees
     already, so a forbidden KEY is still caught in raw.
 
-    RESIDUAL, stated rather than papered over: this refuses targets that NAME
-    the reference. A module that reaches it transitively is not visible here --
-    that is what the import separation test covers, and the two nets have
-    different populations. A diagnostic that ACCEPTS a reference needs a
-    ``reference_energy`` argument key, which the key-side sweep already refuses.
+    RESIDUAL, stated rather than papered over, and CORRECTED after a reviewer
+    read the other net instead of taking this docstring's word for it. This
+    refuses targets that NAME the reference. A target that reaches the reference
+    TRANSITIVELY -- a module importing a helper that imports the manifest -- is
+    not visible here.
+
+    An earlier version of this paragraph said that case "is what the import
+    separation test covers". **That was wrong, and it was wrong in the
+    comfortable direction.** ``tests/unit/test_hi_reference_separation.py`` is a
+    DIRECT-IMPORT CENSUS: its own docstring records three static shapes that
+    reach the holder and are invisible to it, including a transitive chain
+    through a helper outside the swept roots. So transitive reachability is
+    covered by NEITHER net, not by the other one, and writing that it was
+    covered turned a real gap into a division of labour that does not exist.
+
+    What IS covered between the two: a target naming the reference module or
+    carrying a forbidden token (here), a direct import from a swept module
+    (there), and a diagnostic that ACCEPTS a reference, which needs a
+    ``reference_energy`` argument key that the key-side sweep refuses.
     """
 
     rejections: list[Rejection] = []

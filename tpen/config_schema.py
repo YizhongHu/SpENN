@@ -342,6 +342,27 @@ def iter_interpolations(text: str) -> Iterator[str]:
         start = text.find(_INTERPOLATION_OPEN, index)
         if start < 0:
             return
+        # ESCAPED OPENERS RUN NO RESOLVER, so reporting one is a false refusal.
+        # MEASURED against OmegaConf rather than read off the documentation:
+        # ``\${oc.env:VAR,0}`` resolves to the literal text ``${oc.env:VAR,0}``
+        # and never touches the environment. An ODD number of preceding
+        # backslashes escapes the opener; an EVEN number is an escaped backslash
+        # followed by a REAL interpolation (``\\${oc.env:VAR}`` resolved to
+        # ``\7`` with the variable set), so parity is the test, not presence.
+        backslashes = 0
+        probe = start - 1
+        while probe >= 0 and text[probe] == "\\":
+            backslashes += 1
+            probe -= 1
+        if backslashes % 2 == 1:
+            # Resume just past THIS opener rather than past the whole escaped
+            # expression, and that distinction is load-bearing: a real
+            # interpolation nested inside an escaped one still resolves.
+            # ``\${oc.select:a,${oc.env:VAR}}`` came back as ``${oc.select:a,7}``
+            # -- the outer is literal text, the inner RAN. Skipping to the
+            # closing brace would admit exactly that.
+            index = start + len(_INTERPOLATION_OPEN)
+            continue
         # Walk forward counting braces so the expression ends at ITS OWN closing
         # brace rather than at the first one belonging to something nested.
         depth = 0
