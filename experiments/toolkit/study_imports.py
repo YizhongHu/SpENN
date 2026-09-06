@@ -116,15 +116,38 @@ def study_slug(study_dir: Path) -> str:
     ``hooke/tpen-pair-scan-v1`` encodes as ``hooke_2ftpen_2dpair_2dscan_2dv1``.
 
     Derived from the full relative path rather than the basename, so
-    ``a/study`` and ``b/study`` also stay distinct.
+    ``a/study`` and ``b/study`` also stay distinct. A study OUTSIDE this
+    loader's ``experiments/`` is encoded from its absolute path under an
+    ``_abs_`` anchor, so the inside and outside spaces cannot overlap either.
+
+    ONE LOADER INSTANCE SERVES EVERY CHECKOUT in an interpreter -- whichever
+    bootstrapped first. Two checkouts exist precisely when two revisions differ,
+    so if their ``study_imports.py`` files THEMSELVES differ, the second
+    checkout's studies are keyed and cache-validated by the first checkout's
+    loader code, silently. No collision results (slugs stay distinct and
+    ``_load_leaf`` still validates), but the behaviour is the older loader's.
+    Untested and not covered by any test here; recorded rather than fixed.
     """
 
+    resolved = study_dir.resolve()
     try:
-        relative = study_dir.resolve().relative_to(_EXPERIMENTS_ROOT)
-    except ValueError:  # a study outside experiments/ -- fall back to the path
-        relative = Path(*study_dir.resolve().parts[1:])
+        relative = resolved.relative_to(_EXPERIMENTS_ROOT)
+        anchor = ""
+    except ValueError:
+        # A study outside this loader's experiments/ -- the ordinary case when a
+        # second checkout is in play. Fall back to the absolute path, MINUS the
+        # filesystem root, which is not an identifier.
+        #
+        # The anchor is not decoration. Without it an outside `/foo/bar` and an
+        # inside `experiments/foo/bar` encode identically, which would break the
+        # injectivity this function promises -- and it promises it because a
+        # collision here silently returns another study's module. `_` cannot
+        # begin an encoded relative segment (a leading `_` doubles to `__`), so
+        # the two spaces cannot overlap.
+        relative = Path(*resolved.parts[1:])
+        anchor = "_abs_"
 
-    encoded = []
+    encoded = [anchor] if anchor else []
     for char in relative.as_posix():
         if char.isalnum():
             encoded.append(char)

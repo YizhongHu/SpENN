@@ -22,7 +22,16 @@ status quo.
 
 It does NOT do scope analysis.  A name rebound inside one function is treated as
 rebound everywhere in the file.  That is intentional and is the conservative
-direction.
+direction -- but state the consequence plainly, because it is sharper than
+"conservative" suggests:
+
+**THE DROP IS A PER-FILE KILL SWITCH.**  A single function parameter named
+``sys`` anywhere in a file disables the rule for that ENTIRE file, including
+mutations far from the shadowing.  Measured, not theorised.  The fix for a
+false positive installed a blind spot with the same trigger, and the honest
+description of the trade is that this instrument prefers silence to accusation
+at file granularity.  Making it scope-aware is the static-analysis project this
+deliberately is not.
 """
 
 from __future__ import annotations

@@ -96,6 +96,24 @@ def find_bare_colliding_sibling_imports(root: Path) -> list[str]:
     -------
     list of str
         ``"<path>:<line>: <name>"`` for every violation; empty when clean.
+
+    Notes
+    -----
+    WHAT THIS MATCHES, mechanically: ``ast.Import`` and level-0
+    ``ast.ImportFrom`` nodes whose first dotted segment is a name the study
+    supplies and more than one study supplies.
+
+    KNOWN-UNCAUGHT, enumerated here because they previously were not, anywhere.
+    A sibling reached WITHOUT an import statement is invisible to this rule:
+    ``importlib.import_module("plan")``, ``__import__("plan")``,
+    ``exec("import plan")``, ``runpy.run_path``, or a hand-rolled loader. These
+    are not hypothetical -- ``experiments/`` already contains ``import_module``
+    and ``__import__`` call sites, and one of them (``he-cutover/hev1.py``) was
+    a real instance of this defect that an import-only census could not see and
+    that had to be found by reading.
+
+    The behavioural arms in this file exist because of that gap: a structural
+    rule over import statements cannot be the only instrument.
     """
 
     study_dirs = _sys_path_eligible_dirs(root)
@@ -150,9 +168,21 @@ def find_bare_sys_modules_registrations(root: Path) -> list[str]:
     It therefore does NOT match, measured rather than assumed:
     ``sys.modules['plan'] = module`` (a constant key, not a ``Name``),
     ``sys.modules.setdefault(...)``, ``sys.modules.update(...)``,
-    ``sys.modules.pop(...)``, augmented or tuple-unpacking assignment, or any
-    write through an alias of the mapping itself. These are CATEGORIES with
-    examples, not an exhaustive list.
+    ``sys.modules.pop(...)``, augmented, tuple-target or for-loop-target
+    assignment, an f-string subscript, ``exec``, or any write through an alias
+    of the mapping itself. These are CATEGORIES with examples, not an
+    exhaustive list.
+
+    THE CONSTANT-KEY GAP IS A DELIBERATE TRADE, disclosed here because it was
+    previously undisclosed and it is the plainest spelling of the forbidden
+    thing. ``sys.modules['plan'] = module`` is NOT flagged. It cannot be: the
+    study bootstrap in all 49 rewritten files writes
+    ``sys.modules["_tpen_study_imports"]``, a constant key, and a rule matching
+    constant subscripts would flag every file this slice touched. So the rule
+    matches only a ``Name`` subscript, and the literal-key form is accepted.
+    Someone determined to republish under a bare literal key can. The threat
+    model is a study author reaching for a sibling the ordinary way, not an
+    author routing around the guard.
 
     The rule resolves the MAPPING'S OWNER before rejecting.  ``.modules`` is not
     a reserved word: a perfectly ordinary ``Registry`` or plugin object can have
