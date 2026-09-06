@@ -28,6 +28,8 @@ if "_tpen_study_imports" not in _tpen_sys.modules:
     _tpen_spec.loader.exec_module(_tpen_module)
 sibling = _tpen_sys.modules["_tpen_study_imports"].sibling
 
+from experiments.toolkit.ast_bindings import sys_module_names  # noqa: E402
+
 run_train_row = sibling(__file__, 'run_train_row')
 
 
@@ -99,80 +101,34 @@ def test_profiles_contain_policy_but_no_filesystem_roots() -> None:
                 assert not value.startswith("/")
 
 
-def _sys_aliases(tree: ast.AST) -> set[str]:
-    """Return the names bound to the ``sys`` module in one parsed file.
+# Binding analysis has ONE owner. This rule and the sys.modules rule in
+# tests/unit/experiments/test_study_module_identity.py had a copy each, and the
+# copies were wrong in the same way at the same time -- the duplication shape
+# that produced two of this slice's own defects.
+def _cross_study_violations(study: Path) -> set[str]:
+    """Return gateway violations for the he-cutover study directory.
 
-    The sys.path rule below used to match ``owner.value.id == "sys"``, which
-    matches a SPELLING rather than resolving a BINDING: ``import sys as _s``
-    then ``_s.path.insert(...)`` sailed through. That is not hypothetical --
-    the study-scoped sibling bootstrap imports ``sys`` under an alias, so
-    ordinary code in this repository already evades the literal match.
+    THE SUPPORTED OPERATION SET, stated exactly rather than implied: a CALL to
+    ``sys.path.insert``, ``.append`` or ``.extend``, where the ``sys`` binding
+    is resolved by ``experiments.toolkit.ast_bindings.sys_module_names``.
 
-    WHAT THIS RULE CATCHES, stated exactly rather than implied: ``import sys``
-    or ``import sys as X`` at any scope, followed by attribute access on that
-    name, where the name is never rebound in the file.
+    Other ways to change the same list are NOT detected, each MEASURED against a
+    running mutant rather than assumed: ``sys.path += [...]`` (augmented
+    assignment), ``sys.path = [...]`` (whole-list replacement),
+    ``sys.path.remove(...)``, and ``sys.path[:0] = [...]`` (slice assignment).
+    See ``sys_module_names`` for the binding forms that also evade it.
 
-    KNOWN-UNCAUGHT, each MEASURED to change ``sys.path`` while this rule stays
-    green (independent review of PR #484, round 2):
-
-    ==========================  ================================================
-    ``from sys import path``    the module is never named
-    ``from sys import path as p``  same, aliased
-    ``importlib.import_module("sys")``  the binding is created at runtime
-    ``s = sys``                 assignment alias; also disables the name here
-    ``p = sys.path``            the list is aliased, not the module
-    ``sys.path[:0] = [...]``    slice assignment, not an ``insert`` call
-    ==========================  ================================================
-
-    Closing these needs scope-aware binding analysis, which is a static-analysis
-    project rather than a guard. Deliberately NOT attempted: a guard that claims
-    more than it delivers is worse than an honest narrow one. Tracked separately.
+    Deliberately narrow. The realistic case is a study author reaching for a
+    sibling the ordinary way; an author routing around the guard is not the
+    threat model, and no guard of this shape would stop one.
     """
 
-    aliases: set[str] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                if alias.name == "sys":
-                    aliases.add(alias.asname or "sys")
-
-    # Drop any name that is REBOUND anywhere in the file. Once `s = Registry()`
-    # appears, a later `s.path.insert(...)` cannot be attributed to the sys
-    # module by parsing alone, and guessing produces a FALSE POSITIVE -- which
-    # is the failure that only surfaces when it refuses somebody's legitimate
-    # code. Conservative in the safe direction: fewer false accusations, more
-    # known-uncaught forms, and the uncaught set is enumerated below rather
-    # than left implicit.
-    rebound = {
-        node.id
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store)
-    }
-    # Function parameters shadow too, and they are ``ast.arg`` rather than a
-    # ``Name`` in ``Store`` context -- a distinction that cost a red test here
-    # rather than being reasoned about correctly the first time.
-    rebound |= {
-        arg.arg
-        for node in ast.walk(tree)
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda))
-        for arg in [
-            *node.args.posonlyargs,
-            *node.args.args,
-            *node.args.kwonlyargs,
-            *([node.args.vararg] if node.args.vararg else []),
-            *([node.args.kwarg] if node.args.kwarg else []),
-        ]
-    }
-    return aliases - rebound
-
-
-def _cross_study_violations(study: Path) -> set[str]:
     violations = set()
     for path in study.glob("*.py"):
         if path.name == "hev1.py":
             continue
         tree = ast.parse(path.read_text(encoding="utf-8"))
-        sys_aliases = _sys_aliases(tree)
+        sys_aliases = sys_module_names(tree)
         for node in ast.walk(tree):
             if isinstance(node, ast.Import) and any(alias.name.split(".", 1)[0] in HEV1_BARE_MODULES for alias in node.names):
                 violations.add(f"{path.name}:bare-import")

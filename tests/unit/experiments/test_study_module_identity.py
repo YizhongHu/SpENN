@@ -50,6 +50,8 @@ from pathlib import Path
 
 import pytest
 
+from experiments.toolkit.ast_bindings import sys_module_names
+
 REPO_ROOT = Path(__file__).resolve().parents[3]
 EXPERIMENTS = REPO_ROOT / "experiments"
 
@@ -127,53 +129,6 @@ def find_bare_colliding_sibling_imports(root: Path) -> list[str]:
     return violations
 
 
-def _sys_module_names(tree: ast.AST) -> set[str]:
-    """Return names bound to the ``sys`` module and never rebound in this file.
-
-    WHAT THIS RESOLVES: ``import sys`` / ``import sys as X`` followed by
-    attribute access, where ``X`` is never reassigned or shadowed.
-
-    KNOWN-UNCAUGHT, measured by independent review of PR #484 round 2 against
-    the sibling ``sys.path`` rule and applying equally here: ``from sys import
-    modules``, ``importlib.import_module("sys")``, an assignment alias
-    (``s = sys``), and aliasing the mapping itself (``m = sys.modules``).
-    Closing those needs scope-aware binding analysis, which is a static-analysis
-    project rather than a guard; a guard that claims more than it delivers is
-    worse than an honest narrow one. Tracked separately.
-
-    Names that are REBOUND anywhere are dropped, because once ``s = Registry()``
-    appears a later ``s.modules[...]`` cannot be attributed to ``sys`` by
-    parsing -- and guessing yields a false positive, the failure mode that only
-    shows up when it refuses somebody's legitimate code.
-    """
-
-    aliases: set[str] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                if alias.name == "sys":
-                    aliases.add(alias.asname or "sys")
-
-    rebound = {
-        node.id
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store)
-    }
-    rebound |= {
-        arg.arg
-        for node in ast.walk(tree)
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda))
-        for arg in [
-            *node.args.posonlyargs,
-            *node.args.args,
-            *node.args.kwonlyargs,
-            *([node.args.vararg] if node.args.vararg else []),
-            *([node.args.kwarg] if node.args.kwarg else []),
-        ]
-    }
-    return aliases - rebound
-
-
 def find_bare_sys_modules_registrations(root: Path) -> list[str]:
     """Return one message per ``sys.modules[<plain name>] = ...`` under ``root``.
 
@@ -187,6 +142,17 @@ def find_bare_sys_modules_registrations(root: Path) -> list[str]:
     module's bare sibling imports resolve.  With siblings loaded study-scoped
     the flag is unnecessary, and leaving it in would have handed the shared
     slot back after the imports were fixed.
+
+    THE OPERATION SET THIS MATCHES, mechanically: an ``ast.Assign`` whose
+    target is a ``Subscript`` of ``<name>.modules`` where the subscript is a
+    plain ``ast.Name`` and ``<name>`` came from ``sys_module_names``.
+
+    It therefore does NOT match, measured rather than assumed:
+    ``sys.modules['plan'] = module`` (a constant key, not a ``Name``),
+    ``sys.modules.setdefault(...)``, ``sys.modules.update(...)``,
+    ``sys.modules.pop(...)``, augmented or tuple-unpacking assignment, or any
+    write through an alias of the mapping itself. These are CATEGORIES with
+    examples, not an exhaustive list.
 
     The rule resolves the MAPPING'S OWNER before rejecting.  ``.modules`` is not
     a reserved word: a perfectly ordinary ``Registry`` or plugin object can have
@@ -213,7 +179,7 @@ def find_bare_sys_modules_registrations(root: Path) -> list[str]:
             except SyntaxError:
                 continue
 
-            sys_aliases = _sys_module_names(tree)
+            sys_aliases = sys_module_names(tree)
 
             for node in ast.walk(tree):
                 if not isinstance(node, ast.Assign):
@@ -686,7 +652,13 @@ try:
     plan_b = direct(B, "plan")
 except ImportError as exc:
     print("RAISED_IMPORTERROR")
-    print("MENTIONS_BOTH", "strata.py" in str(exc) and str(B) in str(exc))
+    # BOTH complete paths, not one plus a bare basename. An error naming only
+    # the REQUESTED file passed the previous form while being undiagnosable --
+    # the reader cannot see which other checkout won the key.
+    bound = str(A / "experiments" / "atomistic" / "he-v1" / "strata.py")
+    requested = str(B / "experiments" / "atomistic" / "he-v1" / "strata.py")
+    print("MENTIONS_BOUND", bound in str(exc))
+    print("MENTIONS_REQUESTED", requested in str(exc))
 else:
     print("RETURNED_SILENTLY", plan_b.strata.__file__)
 """
@@ -716,7 +688,86 @@ def test_a_foreign_checkout_raises_instead_of_returning_the_wrong_module(
     assert "RAISED_IMPORTERROR" in result.stdout, (
         "checkout B silently received a module from checkout A:\n" + result.stdout
     )
-    assert "MENTIONS_BOTH True" in result.stdout, (
-        "the error must name the bound file and the requested one, or it cannot "
-        "be diagnosed:\n" + result.stdout
+    assert "MENTIONS_BOUND True" in result.stdout, (
+        "the error must name the file currently BOUND to the key, or the reader "
+        "cannot tell which checkout won it:\n" + result.stdout
     )
+    assert "MENTIONS_REQUESTED True" in result.stdout, (
+        "the error must name the REQUESTED file too:\n" + result.stdout
+    )
+
+
+# --------------------------------------------------------------------------
+# The PRODUCTION route across checkouts.
+#
+# The adopted cross-checkout test above enters through an ordinary import of
+# the loader. That is NOT how the 49 rewritten files enter: each runs a
+# bootstrap that publishes the loader under the single bare key
+# `_tpen_study_imports`, so exactly ONE loader instance exists per interpreter
+# and every study in the process is keyed by it.
+#
+# A fix verified only on the tested route and absent on the production route is
+# this lane's recurring failure shape, so the production route gets its own arm
+# rather than being assumed equivalent.
+#
+# What makes it correct is load-bearing and easy to delete by accident: a study
+# outside the single loader's `_EXPERIMENTS_ROOT` fails `relative_to` and falls
+# back to an absolute-path-derived slug, so the two checkouts cannot collide on
+# one key. That fallback is the mechanism under test here.
+# --------------------------------------------------------------------------
+_PRODUCTION_ROUTE_PROBE = """
+import importlib.util, pathlib, sys
+A = pathlib.Path({repo!r}); B = pathlib.Path({other!r})
+
+def enter(root, name):
+    path = root / "experiments" / "atomistic" / "he-v1" / (name + ".py")
+    spec = importlib.util.spec_from_file_location("_prod_" + str(len(sys.modules)), path)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+first, second = (A, B) if {forward} else (B, A)
+m1 = enter(first, "plan")
+m2 = enter(second, "plan")
+print("LOADER_INSTANCES", len([k for k in sys.modules if k == "_tpen_study_imports"]))
+print("FIRST_STRATA", m1.strata.__file__)
+print("SECOND_STRATA", m2.strata.__file__)
+print("DISTINCT", m1.strata.__file__ != m2.strata.__file__)
+print("FIRST_OWN", str(first) in m1.strata.__file__ or str(first.resolve()) in m1.strata.__file__)
+print("SECOND_OWN", str(second) in m2.strata.__file__ or str(second.resolve()) in m2.strata.__file__)
+"""
+
+
+@pytest.mark.parametrize("forward", [True, False], ids=["a-then-b", "b-then-a"])
+def test_production_bootstrap_route_keeps_checkouts_apart(
+    tmp_path: Path, forward: bool
+) -> None:
+    """Two checkouts entered the way the rewritten files enter must not mix."""
+
+    other = tmp_path / "checkout-b"
+    for sub in (Path("experiments") / "toolkit", Path("experiments") / "atomistic" / "he-v1"):
+        shutil.copytree(
+            REPO_ROOT / sub, other / sub, ignore=shutil.ignore_patterns("__pycache__")
+        )
+
+    script = _PRODUCTION_ROUTE_PROBE.format(
+        repo=str(REPO_ROOT), other=str(other), forward=forward
+    )
+    result = subprocess.run(
+        [sys.executable, "-B", "-c", textwrap.dedent(script)],
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"
+
+    # One shared loader is the CONDITION under test, not an incidental detail:
+    # if this ever reads > 1 the arm is no longer exercising the production route.
+    assert "LOADER_INSTANCES 1" in result.stdout, result.stdout
+    assert "DISTINCT True" in result.stdout, (
+        "two checkouts silently shared a study module on the production route:\n"
+        + result.stdout
+    )
+    assert "FIRST_OWN True" in result.stdout, result.stdout
+    assert "SECOND_OWN True" in result.stdout, result.stdout
