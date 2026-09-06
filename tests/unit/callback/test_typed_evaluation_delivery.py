@@ -556,9 +556,12 @@ def test_the_failure_log_emits_ascii_only_bytes(tmp_path: Path) -> None:
     """
 
     path = tmp_path / "failures.jsonl"
+    # A real RunContext, not None: this module is typeguard-checked at runtime,
+    # so the annotation is enforced even though ``_path`` ignores the context
+    # when an explicit path is set.
+    context = make_run_context(tmp_path)
 
-    # ``_path`` returns ``self.path`` when set, so the context is unused here.
-    FailureLog(path=path)._append(None, {"message": "caf\u00e9 \u2014 \u4e2d"})
+    FailureLog(path=path)._append(context, {"message": "caf\u00e9 \u2014 \u4e2d"})
 
     raw = path.read_bytes()
     assert raw.isascii(), f"FailureLog emitted non-ASCII bytes: {raw!r}"
