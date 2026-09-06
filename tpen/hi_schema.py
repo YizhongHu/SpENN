@@ -62,6 +62,7 @@ from tpen.config_schema import (
 __all__ = [
     "ADMITTED_CALLBACK_TARGETS",
     "ADMITTED_METHOD_TARGETS",
+    "REFERENCE_MANIFEST_MODULE",
     "HI_METHOD_ROSTER",
     "MethodAvailability",
     "HI_TRAIN_POLICY",
@@ -186,6 +187,16 @@ STOP_RULE_SURFACE = ForbiddenSurface(
         "confirmation lane. Every arm runs its declared budget"
     ),
 )
+
+
+# The evaluation manifest's module, named as a STRING and deliberately NOT
+# imported. Importing it here would put ``tpen.hi_manifest`` on the training
+# path -- the exact reachability ``tests/unit/test_hi_reference_separation.py``
+# asserts is absent -- so the firewall would breach the invariant it enforces.
+# That test carries its own copy of this name and a control asserts the two
+# agree, because a silent divergence would leave the rule below pointing at a
+# module nobody loads.
+REFERENCE_MANIFEST_MODULE = "tpen.hi_manifest"
 
 
 # ---------------------------------------------------------------------------
@@ -459,6 +470,11 @@ def _sweep_callbacks(resolved_tree: Any) -> list[Rejection]:
         # Only the callback's own ``_target_`` is a callback identity; a nested
         # ``_target_`` is a constructor argument (a schedule, a payload, a
         # probe) and is governed by its owning callback, not by this allowlist.
+        # THE BOUNDARY IS UNCHANGED AND THE REASON STILL HOLDS. What changed is
+        # that a nested target is no longer ungoverned: `_sweep_target_values`
+        # refuses an executable target that names the evaluation reference,
+        # anywhere in the tree and at any depth. See its docstring for why that
+        # is a separate rule rather than a wider allowlist here.
         owner = path.rsplit("._target_", 1)[0]
         if owner.count(".") != 0 or not owner.startswith("callbacks["):
             continue
@@ -475,6 +491,105 @@ def _sweep_callbacks(resolved_tree: Any) -> list[Rejection]:
                     ),
                 )
             )
+    return rejections
+
+
+def _sweep_target_values(resolved_tree: Any) -> list[Rejection]:
+    """Reject an executable ``_target_`` that names the evaluation reference.
+
+    Parameters
+    ----------
+    resolved_tree : Any
+        Resolved configuration tree.
+
+    Returns
+    -------
+    list of Rejection
+        One rejection per offending target, at any depth in any section.
+
+    Notes
+    -----
+    WHAT THIS CLOSES, MEASURED. :meth:`ForbiddenSurface.matches` tests KEYS, so
+    a value is never tokenized. Injecting
+    ``_target_: tpen.hi_manifest.reference_energy`` at eight points in the
+    control config was ACCEPTED at six of them -- ``loggers``, ``sampler``,
+    ``model``, ``runner``, ``trainer`` and the nested ``model.embedding``. Only
+    ``callbacks`` and ``optimizer`` refused it, and each of those refuses for
+    its own reason (an allowlist, and the method roster) rather than because
+    targets were governed. **Five root sections had no target rule at all**, so
+    the nested-callback-target finding this rule was filed under was one
+    instance of the gap rather than the gap itself. With this rule the same
+    eight injections are refused eight of eight, and the six that changed are
+    refused by NAME here rather than incidentally by some other rule -- see
+    ``TestNoTargetCanNameTheReferenceModule``, which asserts the rule name and
+    not merely that something was refused.
+
+    WHY A DENYLIST HERE AND AN ALLOWLIST FOR CALLBACKS. The callback allowlist
+    is enumerable: the study installs a fixed set of bookkeeping and health
+    callbacks and a new one is a review event. The targets in ``model``,
+    ``sampler`` and ``trainer`` are NOT enumerable at schema time -- the scan
+    varies producers, activations, update rules and five initializations, so an
+    allowlist would have to list every arm the materializer may emit and would
+    refuse a legitimate arm the day one is added. That is the over-restriction
+    Amendment A warns about, and it surfaces as a run that cannot start rather
+    than as a red test. The hazard being closed is narrow and nameable -- an
+    executable that loads the evaluation reference -- so it is named.
+
+    TWO RULES, AND NEITHER SUBSUMES THE OTHER. The module rule catches
+    ``tpen.hi_manifest.load_evaluation_manifest``, whose tokens are
+    ``tpen, hi, manifest, load, evaluation, manifest`` and contain no forbidden
+    token at all. The token rule catches
+    ``tpen.diagnostics.energy.ReferenceGapProbe``, which lives outside the
+    manifest module entirely. Each was checked against the other's example.
+
+    RESOLVED TREE ONLY, for the same reason :func:`_sweep_callbacks` gives: a
+    ``_target_`` may itself be an interpolation, and the raw tree then holds
+    ``"${...}"`` with nothing to compare. The key-side sweeps run on both trees
+    already, so a forbidden KEY is still caught in raw.
+
+    RESIDUAL, stated rather than papered over: this refuses targets that NAME
+    the reference. A module that reaches it transitively is not visible here --
+    that is what the import separation test covers, and the two nets have
+    different populations. A diagnostic that ACCEPTS a reference needs a
+    ``reference_energy`` argument key, which the key-side sweep already refuses.
+    """
+
+    rejections: list[Rejection] = []
+    for path, key, value in iter_nodes(resolved_tree):
+        if key != "_target_" or not isinstance(value, str):
+            continue
+        target = value.strip()
+        if target == REFERENCE_MANIFEST_MODULE or target.startswith(
+            f"{REFERENCE_MANIFEST_MODULE}."
+        ):
+            rejections.append(
+                Rejection(
+                    rule="forbidden-target:reference-module",
+                    tree="resolved",
+                    path=path,
+                    detail=(
+                        f"_target_ {target!r} is in {REFERENCE_MANIFEST_MODULE!r}, which holds "
+                        "the evaluation reference. Instantiating it would load the reference "
+                        "onto the training path, which is what this schema exists to prevent. "
+                        "The reference is read after training, by a separate process"
+                    ),
+                )
+            )
+            continue
+        for surface in HI_TRAIN_POLICY.forbidden_surfaces:
+            if surface.matches(target):
+                rejections.append(
+                    Rejection(
+                        rule=f"forbidden-target:{surface.name}",
+                        tree="resolved",
+                        path=path,
+                        detail=(
+                            f"_target_ {target!r} names a {surface.name} surface; "
+                            f"{surface.reason}. A _target_ is executable, so the token check "
+                            "applies to the value here and not only to the key"
+                        ),
+                    )
+                )
     return rejections
 
 
@@ -1138,6 +1253,7 @@ def validate_hi_train_config(cfg: DictConfig, *, env: Mapping[str, str] | None =
 
     rejections.extend(sweep_resolved(resolved_tree, HI_TRAIN_POLICY))
     rejections.extend(_sweep_callbacks(resolved_tree))
+    rejections.extend(_sweep_target_values(resolved_tree))
     rejections.extend(_sweep_method(resolved_tree))
     rejections.extend(_sweep_frozen_architecture(resolved_tree))
     rejections.extend(_sweep_electron_nucleus_law(resolved_tree))

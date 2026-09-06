@@ -17,7 +17,9 @@ from tpen.hi_schema import (
     ADMITTED_METHOD_TARGETS,
     HI_EXPERIMENT_NAME,
     HI_METHOD_ROSTER,
+    HI_TRAIN_POLICY,
     HI_TRAIN_SCHEMA,
+    REFERENCE_MANIFEST_MODULE,
     canonical_train_identity,
     declared_schema,
     is_hi_family,
@@ -290,6 +292,113 @@ class TestForbiddenSurfaces:
                 f"{section}.{key} did not trip the stop-rule family; the guard "
                 "recognises only spellings someone thought of in advance"
             )
+
+
+class TestExecutableTargets:
+    """A ``_target_`` is executable, so its VALUE is checked, not only its key.
+
+    ``ForbiddenSurface.matches`` tokenizes keys. That is right for data: a value
+    is inert and the key names what it is. A ``_target_`` inverts it -- the
+    value names the code that will run, and the key is always the same word.
+    """
+
+    def test_rejects_a_target_naming_the_reference_module(self) -> None:
+        cfg = _config(model={"probe": {"_target_": f"{REFERENCE_MANIFEST_MODULE}.reference_energy"}})
+        with pytest.raises(ClosedSchemaError) as caught:
+            _validate(cfg)
+        assert "forbidden-target:reference-module" in _rules(caught.value)
+
+    @pytest.mark.parametrize(
+        ("target", "rule"),
+        [
+            ("tpen.diagnostics.energy.ReferenceGapProbe", "forbidden-target:reference"),
+            ("tpen.callback.BaselineEnergy", "forbidden-target:reference"),
+            ("tpen.callback.AccuracyBandReporter", "forbidden-target:band"),
+            ("tpen.training.EarlyStoppingRule", "forbidden-target:stop-rule"),
+            ("tpen.training.ContinuationLadder", "forbidden-target:continuation"),
+        ],
+    )
+    def test_rejects_a_target_whose_tokens_name_a_forbidden_family(
+        self, target: str, rule: str
+    ) -> None:
+        """The token rule, on targets OUTSIDE the reference module.
+
+        Every one of these lives somewhere the module rule cannot see, so this
+        arm measures the token rule rather than re-measuring the module rule.
+        """
+
+        cfg = _config(model={"probe": {"_target_": target}})
+        with pytest.raises(ClosedSchemaError) as caught:
+            _validate(cfg)
+        assert rule in _rules(caught.value)
+
+    def test_the_two_rules_do_not_subsume_each_other(self) -> None:
+        """Each rule is measured against the case the other misses.
+
+        ``load_evaluation_manifest`` carries no forbidden token, so the token
+        rule alone would admit the function that reads the reference file.
+        ``ReferenceGapProbe`` is outside the manifest module, so the module rule
+        alone would admit it. Neither rule is redundant.
+        """
+
+        token_blind = f"{REFERENCE_MANIFEST_MODULE}.load_evaluation_manifest"
+        assert not any(
+            surface.matches(token_blind) for surface in HI_TRAIN_POLICY.forbidden_surfaces
+        ), "the token rule was expected to be blind to this target; if it now sees it, this test no longer measures what it claims"
+
+        module_blind = "tpen.diagnostics.energy.ReferenceGapProbe"
+        assert not module_blind.startswith(f"{REFERENCE_MANIFEST_MODULE}.")
+
+        for target in (token_blind, module_blind):
+            with pytest.raises(ClosedSchemaError):
+                _validate(_config(model={"probe": {"_target_": target}}))
+
+    def test_rejects_a_target_at_any_depth(self) -> None:
+        """Depth is not a defence: the sweep walks the whole resolved tree."""
+
+        cfg = _config(
+            model={"a": {"b": {"c": {"_target_": f"{REFERENCE_MANIFEST_MODULE}.reference_energy"}}}}
+        )
+        with pytest.raises(ClosedSchemaError) as caught:
+            _validate(cfg)
+        assert "forbidden-target:reference-module" in _rules(caught.value)
+
+    @pytest.mark.parametrize(
+        "target",
+        [
+            # Every one of these is a real target in the shipped control config.
+            "tpen.nn.TPENWaveFunction",
+            "tpen.nn.initialization.TorchInitializer",
+            "tpen.data.atomic_configuration.AtomicConfiguration",
+            "tpen.physics.potential.NucleusNucleusPotential",
+            "tpen.sampling.metropolis.MetropolisSampler",
+            "tpen.equivariance.checks.FullModelEquivarianceChecker",
+            "tpen.accelerator.TorchAllocatorPeakProbe",
+            "tpen.checkpoint.TrainResume",
+            "torch.optim.Adam",
+        ],
+    )
+    def test_accepts_the_targets_the_study_actually_constructs(self, target: str) -> None:
+        """The over-restriction control, one arm per target.
+
+        A token set one word too wide would refuse a real component. Read as a
+        set they would be one assertion and the failure would name none of
+        them; one arm each is what makes a refusal say WHICH target it refused.
+        """
+
+        _validate(_config(model={"probe": {"_target_": target}}))
+
+    def test_a_forbidden_token_in_an_ordinary_value_is_still_permitted(self) -> None:
+        """The rule is scoped to ``_target_``, not to every string in the tree.
+
+        Widening it to all values would refuse a run directory named
+        ``outputs/baseline`` and a docstring-like comment field, neither of
+        which executes anything.
+        """
+
+        _validate(
+            _config(run={"root": "outputs/baseline_sweep", "run_id": "control_0001"})
+        )
 
 
 class TestClosedSections:
