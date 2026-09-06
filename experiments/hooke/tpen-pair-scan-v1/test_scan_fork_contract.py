@@ -56,15 +56,13 @@ for _module_name in list(sys.modules):
         del sys.modules[_module_name]
 
 
-def _load_script(name: str, *, bind_direct: bool = False) -> ModuleType:
+def _load_script(name: str) -> ModuleType:
     path = STUDY_DIR / f"{name}.py"
     spec = importlib.util.spec_from_file_location(f"tpen_pair_scan_v1_contract_{name}", path)
     assert spec is not None
     assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
-    if bind_direct:
-        sys.modules[name] = module
     spec.loader.exec_module(module)
     return module
 
@@ -83,7 +81,7 @@ from experiments.toolkit.study_imports import sibling  # noqa: E402
 
 study_config = sibling(__file__, 'utils.config')
 
-launch = _load_script("launch", bind_direct=True)
+launch = _load_script("launch")
 plan = _load_script("plan")
 final_collect = _load_script("final_collect")
 

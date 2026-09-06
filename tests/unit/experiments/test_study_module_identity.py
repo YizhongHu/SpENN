@@ -118,9 +118,86 @@ def find_bare_colliding_sibling_imports(root: Path) -> list[str]:
     return violations
 
 
+def find_bare_sys_modules_registrations(root: Path) -> list[str]:
+    """Return one message per ``sys.modules[<plain name>] = ...`` under ``root``.
+
+    An import scan cannot see this: publishing a module into the shared slot is
+    an ASSIGNMENT, not an import.  Several study tests did exactly that --
+
+        sys.modules[spec.name] = module   # unique key, fine
+        sys.modules[name] = module        # BARE key, re-creates the collision
+
+    -- behind a ``bind_direct`` flag whose only purpose was to make a loaded
+    module's bare sibling imports resolve.  With siblings loaded study-scoped
+    the flag is unnecessary, and leaving it in would have handed the shared
+    slot back after the imports were fixed.
+
+    Limitation, stated rather than hidden: a subscript that is a plain name is
+    indistinguishable at parse time from one holding an already-unique key, so
+    this rule asks for ``spec.name`` or an explicitly-built unique key. That is
+    a test-authoring convention, not a constraint on study layout.
+    """
+
+    violations: list[str] = []
+    for study_dir in _sys_path_eligible_dirs(root):
+        for path in sorted(study_dir.rglob("*.py")):
+            if "__pycache__" in path.parts:
+                continue
+            try:
+                tree = ast.parse(path.read_text(encoding="utf-8"))
+            except SyntaxError:
+                continue
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Assign):
+                    continue
+                for target in node.targets:
+                    if (
+                        isinstance(target, ast.Subscript)
+                        and isinstance(target.value, ast.Attribute)
+                        and target.value.attr == "modules"
+                        and isinstance(target.slice, ast.Name)
+                    ):
+                        violations.append(f"{path}:{node.lineno}: sys.modules[{target.slice.id}]")
+    return violations
+
+
 # --------------------------------------------------------------------------
 # The rule, against the real tree.
 # --------------------------------------------------------------------------
+def test_no_module_is_published_under_a_bare_sys_modules_key() -> None:
+    """No study file hands a module back to the shared bare slot."""
+
+    violations = find_bare_sys_modules_registrations(EXPERIMENTS)
+    assert violations == [], (
+        "These register a module under a bare key, re-creating the shared slot "
+        "that makes resolution order-dependent:\n  "
+        + "\n  ".join(violations)
+        + "\n\nRegister under spec.name (or another explicitly unique key) only."
+    )
+
+
+def test_sys_modules_rule_fires_on_a_bare_key(tmp_path: Path) -> None:
+    """OVER-PERMISSIVE mutant: a bare-key registration must be caught."""
+
+    _write_study(tmp_path / "study_a", "import sys\nsys.modules[name] = module\n")
+    _write_study(tmp_path / "study_b", "VALUE = 1\n")
+
+    violations = find_bare_sys_modules_registrations(tmp_path)
+
+    assert len(violations) == 1, violations
+    assert violations[0].endswith("sys.modules[name]")
+
+
+def test_sys_modules_rule_allows_a_unique_key(tmp_path: Path) -> None:
+    """OVER-RESTRICTIVE mutant: registering under ``spec.name`` must stay green."""
+
+    _write_study(tmp_path / "study_a", "import sys\nsys.modules[spec.name] = module\n")
+    _write_study(tmp_path / "study_b", "VALUE = 1\n")
+
+    assert find_bare_sys_modules_registrations(tmp_path) == []
+
+
+
 def test_no_bare_import_of_a_colliding_sibling() -> None:
     """No study reaches an ambiguous sibling by bare import."""
 
