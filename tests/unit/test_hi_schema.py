@@ -1432,17 +1432,26 @@ class TestTheReferenceModuleCannotArriveAsDATA:
         """Pins the premise of a deliberate NON-decision.
 
         Auditing the widened identity check found three spellings it does not
-        match: a bare ``hi_manifest``, an upper-case ``TPEN.HI_MANIFEST``, and a
-        filesystem path ``tpen/hi_manifest.py``. No rule was added for them, and
-        that is only defensible while they cannot actually import the module.
+        match. TWO of them -- a bare ``hi_manifest`` and an upper-case
+        ``TPEN.HI_MANIFEST`` -- cannot import the module, and this test pins
+        that. The third, a filesystem path, CAN, and is filed rather than
+        pinned; see the paragraph below.
 
         MEASURED rather than reasoned: the first two raise ``ModuleNotFoundError``
         -- Python's finder is case-sensitive for module NAMES regardless of the
         filesystem's case sensitivity, which is why the upper-case form fails
-        even on macOS. The path form is not a module name at all;
-        reaching it would need ``spec_from_file_location`` chained into
-        ``module_from_spec`` and ``exec_module``, and passing an instantiated
-        object between config nodes needs ``_args_``, which this schema refuses.
+        even on macOS.
+
+        **THE PATH FORM IS NOT COVERED BY THIS TEST AND IS NOT UNREACHABLE.**
+        The first version of this docstring said reaching it would need
+        ``spec_from_file_location`` chained into ``module_from_spec``, which
+        needs ``_args_`` and is therefore refused. That was WRONG:
+        ``runpy.run_path`` takes the path directly as a keyword and executes the
+        module source, and a reviewer measured it validating. The error was
+        testing ONE mechanism, ``importlib``, and generalising to a
+        class-level negative -- the same census-versus-reachability mistake this
+        lane inherited a warning about. The filesystem spelling is tracked as
+        its own filed item.
 
         This test exists because "I checked and there was nothing reachable" is
         a claim that decays silently: a package rename, a new top-level module,
@@ -1463,6 +1472,72 @@ class TestTheReferenceModuleCannotArriveAsDATA:
                 importlib.import_module(unreachable)
         # The control: the spelling the check DOES match is the one that works.
         assert importlib.import_module(REFERENCE_MANIFEST_MODULE) is not None
+
+    @pytest.mark.parametrize(
+        ("label", "spec"),
+        [
+            (
+                "relative import splits the path across two arguments",
+                {"_target_": "importlib.import_module", "name": ".hi_manifest", "package": "tpen"},
+            ),
+            (
+                "filesystem spelling, which EXECUTES the module source",
+                {"_target_": "runpy.run_path", "path_name": "tpen/hi_manifest.py"},
+            ),
+            (
+                "import hook with a relative level",
+                {
+                    "_target_": "builtins.__import__",
+                    "name": "hi_manifest",
+                    "globals": {"__package__": "tpen"},
+                    "level": 1,
+                },
+            ),
+        ],
+    )
+    def test_KNOWN_OPEN_a_path_never_written_whole_is_not_caught(
+        self, label: str, spec: dict
+    ) -> None:
+        """A RED-BY-DESIGN record of a known-open escape, filed as `fb70cf90`.
+
+        This test asserts the CURRENT, WRONG behaviour on purpose. Each spec
+        below VALIDATES and, at construction, imports or executes the
+        reference-holder module on the training path. Measured at ``745de1e``.
+
+        Why assert the defect rather than delete the case: a known-open hole
+        with no executable trace is indistinguishable from one nobody found. If
+        a later slice closes `fb70cf90`, this test goes RED and whoever fixed it
+        is pointed at the item and at this docstring, rather than discovering a
+        mysterious passing assertion about a config that should be refused.
+
+        THE CLASS IS NOT THESE THREE SPELLINGS. It is "a path that is never
+        written whole": split across arguments, or in filesystem form. String
+        identity cannot close the filesystem half at all -- absolute paths,
+        ``./`` prefixes, symlinks and case-insensitive filesystems all spell the
+        same file -- so the remedy must govern the SLOT or the CONSUMER. Do not
+        close this by adding three more strings to a list.
+
+        Impact bound, and it should stay bounded: the holder becomes reachable,
+        which is the hazard the rule names. The reference NUMBERS live in
+        manifest files, and with ``_args_`` refused no config-only shape can
+        CALL the loader.
+        """
+
+        cfg = OmegaConf.load(_CONTROL_CONFIG)
+        OmegaConf.update(cfg, "runner.load", spec, force_add=True)
+        _validate(cfg)  # known-open: this SHOULD refuse and does not
+
+        # The control that keeps this honest: the dotted spelling in the very
+        # same slot IS refused, so the gap is the spelling and not the slot.
+        dotted = OmegaConf.load(_CONTROL_CONFIG)
+        OmegaConf.update(
+            dotted,
+            "runner.load",
+            {"_target_": "importlib.import_module", "name": REFERENCE_MANIFEST_MODULE},
+            force_add=True,
+        )
+        with pytest.raises(ClosedSchemaError):
+            _validate(dotted)
 
     def test_a_similarly_named_module_is_not_caught(self) -> None:
         """The identity check must not fire on a prefix that merely looks alike."""

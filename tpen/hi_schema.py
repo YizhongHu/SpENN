@@ -665,8 +665,16 @@ def _sweep_target_values(resolved_tree: Any) -> list[Rejection]:
         #
         # ENUMERATING THE IMPORTERS WOULD BE THE SAME MISTAKE AGAIN --
         # ``get_class``, ``get_object``, ``pydoc.locate``, ``pkgutil.resolve_name``
-        # and whatever is added next. Whatever the importer, the module path has
-        # to appear SOMEWHERE as a string, so the string is what is checked.
+        # and whatever is added next. So the module PATH is what is checked
+        # rather than the importer.
+        #
+        # WHAT THIS DOES NOT REACH, stated because the first version of this
+        # comment claimed more. It catches the DOTTED spelling wherever it
+        # appears. It does NOT catch a path split across two arguments
+        # (``name=".hi_manifest", package="tpen"``) or written in filesystem
+        # form (``runpy.run_path("tpen/hi_manifest.py")``), both MEASURED
+        # validating. "The path must appear somewhere as a string" is true only
+        # if it appears WHOLE.
         #
         # Safe to widen because this is EXACT MODULE IDENTITY, not a token: it
         # matches ``tpen.hi_manifest`` and its submodules and nothing else. The
@@ -1149,11 +1157,32 @@ def _sweep_positional_construction(resolved_tree: Any) -> list[Rejection]:
 
     The reachable residuals of this same class, as of this commit, are:
 
-    - **Generic importers carrying a module path as DATA.** Closed by widening
-      the module-identity check to every string value; see
-      :func:`_sweep_target_values`. The family -- ``get_class``, ``get_object``,
-      ``pydoc.locate``, ``pkgutil.resolve_name`` -- is open-ended, which is why
-      the check is on the PATH rather than on the importer.
+    - **Generic importers carrying a module path as DATA. NARROWED, NOT
+      CLOSED, and the earlier text here said "Closed" -- which was wrong.**
+      Widening the module-identity check to every string value (see
+      :func:`_sweep_target_values`) catches the DOTTED spelling wherever it
+      appears. It does not catch a path that is never spelled dotted. MEASURED
+      at head ``745de1e``, all three validating end-to-end:
+      ``import_module(name=".hi_manifest", package="tpen")`` splits the path
+      across two strings; ``runpy.run_path(path_name="tpen/hi_manifest.py")``
+      uses the FILESYSTEM spelling and executes the module source outright;
+      ``builtins.__import__(name="hi_manifest", globals={"__package__": "tpen"},
+      level=1)`` does the same through the import hook.
+
+      The false step was the doctrine sentence, not the code: "the module path
+      has to appear SOMEWHERE as a string" is true only if it appears WHOLE.
+      Split across two arguments, or written as a file path, it does not.
+
+      Filed as its own item rather than patched here: the filesystem class is
+      not closable by string identity at all -- absolute paths, ``./`` prefixes,
+      symlinks and case-insensitive filesystems all spell the same file -- so
+      the remedy has to govern the SLOT or the CONSUMER rather than enumerate
+      spellings, and that is a new production surface.
+
+      Impact bound, unchanged from the specs this rule does refuse: the module
+      is imported or executed on the training path, which is the hazard the rule
+      names. The reference NUMBERS live in manifest files, and with ``_args_``
+      refused there is still no config-only shape that can CALL the loader.
     - **Resolvers supplying a denied capability under an undenied name.** Closed
       by moving to an allowlist; see ``allowed_resolvers`` on
       :data:`HI_TRAIN_POLICY`.
