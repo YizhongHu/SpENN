@@ -215,6 +215,13 @@ trainer:
   max_steps: 100000
   log_every_n_steps: 1
   return_terms: true
+  # DECLARED, never inherited. The inherited behaviour is to MASK non-finite
+  # local-energy rows and report a count. Masking is not a random subsample:
+  # non-finite local energies occur where the local energy is pathological, so
+  # dropping them selects systematically and biases the energy by an amount
+  # nobody has characterised. A count says how many rows went, not what bias
+  # they took with them. This study refuses the step instead.
+  nonfinite_local_energy_policy: fail
   # No global gradient clip. SR's and SPRING's squared update-norm bounds are
   # parameter-coordinate-dependent protections and are a different thing; the
   # schema refuses a non-null value here.

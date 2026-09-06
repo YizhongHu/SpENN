@@ -77,6 +77,10 @@ from tpen.training.score_geometry import (
     unflatten_to_layout,
 )
 from tpen.training.statistics import IdentityStatisticsReducer, StatisticsReducer
+from tpen.training.vmc import (
+    DEFAULT_NONFINITE_LOCAL_ENERGY_POLICY,
+    resolve_nonfinite_local_energy_policy,
+)
 from tpen.training.update import (
     ModelParameterBinding,
     ScoreUpdateInput,
@@ -277,7 +281,11 @@ class StochasticReconfigurationUpdate(VMCUpdateMethod[ScoreUpdateInput]):
         policy: SRPolicy | None = None,
         conventions: ScoreConventions | None = None,
         reducer: StatisticsReducer | None = None,
+        nonfinite_local_energy_policy: str = DEFAULT_NONFINITE_LOCAL_ENERGY_POLICY,
     ) -> None:
+        self.nonfinite_local_energy_policy = resolve_nonfinite_local_energy_policy(
+            nonfinite_local_energy_policy
+        )
         resolved_policy = SRPolicy() if policy is None else policy
         if not isinstance(resolved_policy, SRPolicy):
             raise TypeError("StochasticReconfigurationUpdate.policy must be an SRPolicy")
@@ -432,7 +440,28 @@ class StochasticReconfigurationUpdate(VMCUpdateMethod[ScoreUpdateInput]):
         # the two would fail exactly on the steps where a sample blew up.
         # A row with a non-finite score is dropped for the same reason: it
         # would otherwise poison the whole QGT through the outer product.
-        finite_mask = torch.isfinite(local_energy) & torch.isfinite(rows).all(dim=1)
+        # SECOND MASKING SITE. `compute_vmc_objective` is the other one, and the
+        # same policy governs both -- correcting only the first would fix the
+        # claim in a proper subset of the places it lives, leaving SR silently
+        # masking while the objective refused.
+        #
+        # SCOPE, stated because it is narrower than the mask above: the policy
+        # governs non-finite LOCAL ENERGIES, which is what the acceptance
+        # contract names. A row whose SCORES are non-finite is still dropped
+        # unconditionally, because it would otherwise poison the whole QGT
+        # through the outer product. That drop carries the same selection-bias
+        # hazard and is NOT closed here; it is filed separately rather than
+        # folded in silently.
+        energy_finite = torch.isfinite(local_energy)
+        if self.nonfinite_local_energy_policy == "fail" and not bool(energy_finite.all()):
+            n_bad = int((~energy_finite).sum().item())
+            raise RuntimeError(
+                f"stochastic reconfiguration refused a step: {n_bad} of "
+                f"{int(energy_finite.numel())} local-energy samples are non-finite and the "
+                "active policy is 'fail'. Masking them would drop a systematically "
+                "selected subsample, biasing the estimator by an uncharacterised amount"
+            )
+        finite_mask = energy_finite & torch.isfinite(rows).all(dim=1)
         n_finite = int(finite_mask.sum().item())
 
         if update_input.batch.n_electrons == 0:

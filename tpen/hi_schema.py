@@ -730,6 +730,77 @@ def _sweep_trainability(resolved_tree: Mapping[str, Any]) -> list[Rejection]:
 # ---------------------------------------------------------------------------
 # Rank-invariant preconstruction
 # ---------------------------------------------------------------------------
+# Admissible non-finite local-energy policies, and the one this study defaults
+# to nothing. DECLARATION IS REQUIRED: there is no inherited value, because the
+# inherited value would be the historical "mask" and masking is a
+# known-biased estimator rather than a neutral fallback. Non-finite local
+# energies occur where the local energy is pathological -- near nodes, at
+# coalescence, in the tail -- so dropping them selects a subsample
+# systematically and biases the energy by an uncharacterised amount. A count of
+# how many rows were dropped does not recover that bias.
+#
+# So "mask" stays REACHABLE, because a scientist may knowingly want it, but only
+# by writing it down where this schema can see it.
+_ADMITTED_NONFINITE_POLICIES: frozenset[str] = frozenset({"fail", "mask"})
+_NONFINITE_POLICY_PATH = "trainer.nonfinite_local_energy_policy"
+
+
+def _sweep_nonfinite_local_energy_policy(resolved_tree: Any) -> list[Rejection]:
+    """Require an explicit, admissible non-finite local-energy policy.
+
+    Parameters
+    ----------
+    resolved_tree : Any
+        Resolved configuration tree.
+
+    Returns
+    -------
+    list of Rejection
+        One rejection if the policy is absent or not admissible.
+    """
+
+    # Scoped to configurations that actually declare a trainer, matching the
+    # trainability rule's precedent that "a config with no readout is not a
+    # trainability violation". A configuration with no `trainer` section is not
+    # configuring training at all, so there is no estimator for it to declare
+    # and demanding one would refuse valid partial configs -- an
+    # over-restriction that would surface as a run that cannot start.
+    trainer_found, trainer_section = _select(resolved_tree, "trainer")
+    if not trainer_found or not isinstance(trainer_section, Mapping):
+        return []
+
+    found, value = _select(resolved_tree, _NONFINITE_POLICY_PATH)
+    if not found or value is None:
+        return [
+            Rejection(
+                rule="undeclared-nonfinite-policy",
+                tree="resolved",
+                path=_NONFINITE_POLICY_PATH,
+                detail=(
+                    "must be declared explicitly; admissible values are "
+                    f"{sorted(_ADMITTED_NONFINITE_POLICIES)}. There is no default here on "
+                    "purpose: the inherited behaviour is to MASK non-finite local-energy "
+                    "rows, which drops a systematically selected subsample and biases the "
+                    "energy estimator by an uncharacterised amount. A run must say which "
+                    "estimator it is using"
+                ),
+            )
+        ]
+    if value not in _ADMITTED_NONFINITE_POLICIES:
+        return [
+            Rejection(
+                rule="undeclared-nonfinite-policy",
+                tree="resolved",
+                path=_NONFINITE_POLICY_PATH,
+                detail=(
+                    f"{value!r} is not admissible; expected one of "
+                    f"{sorted(_ADMITTED_NONFINITE_POLICIES)}"
+                ),
+            )
+        ]
+    return []
+
+
 def _sweep_electron_nucleus_law(resolved_tree: Any) -> list[Rejection]:
     """Reject an electron-nucleus cusp law outside the admitted set.
 
@@ -1070,6 +1141,7 @@ def validate_hi_train_config(cfg: DictConfig, *, env: Mapping[str, str] | None =
     rejections.extend(_sweep_method(resolved_tree))
     rejections.extend(_sweep_frozen_architecture(resolved_tree))
     rejections.extend(_sweep_electron_nucleus_law(resolved_tree))
+    rejections.extend(_sweep_nonfinite_local_energy_policy(resolved_tree))
     rejections.extend(_sweep_rank_divergent_fields(resolved_tree))
     if rejections:
         raise ClosedSchemaError(rejections)
