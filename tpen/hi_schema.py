@@ -682,10 +682,20 @@ def _sweep_target_values(resolved_tree: Any) -> list[Rejection]:
         # code that will run -- widening THAT to every value would refuse a run
         # directory named ``outputs/baseline``.
         #
-        # HONEST IMPACT BOUND, from the reviewer that found it: this makes the
-        # manifest module importable, which is the hazard the schema names. The
-        # reference NUMBERS live in manifest files, and with ``_args_`` refused
-        # there is no config-only shape that can CALL the loader.
+        # IMPACT BOUND, RETRACTED. This paragraph used to add that the
+        # reference NUMBERS were safe because "no config-only shape can CALL the
+        # loader". **That was false, and it was the class error this module is
+        # about, committed in a bound rather than in a rule**: it bounded a
+        # hazard by ONE LOADER'S NAME. An independent verifier measured
+        # ``{_target_: omegaconf.OmegaConf.load, file_: <the manifest path>}``
+        # VALIDATING and returning ``reference.energy ==
+        # -2.9037243770341195``. No module path, no forbidden token -- the
+        # manifest path tokenizes to nothing this schema denies.
+        #
+        # So the honest bound is only this: this RULE refuses the dotted module
+        # spelling wherever it appears as a string. It does not bound what a
+        # configuration can read. Tracked as its own item; see the residual list
+        # on :func:`_sweep_positional_construction`.
         if target == REFERENCE_MANIFEST_MODULE or target.startswith(
             f"{REFERENCE_MANIFEST_MODULE}."
         ):
@@ -1179,10 +1189,30 @@ def _sweep_positional_construction(resolved_tree: Any) -> list[Rejection]:
       the remedy has to govern the SLOT or the CONSUMER rather than enumerate
       spellings, and that is a new production surface.
 
-      Impact bound, unchanged from the specs this rule does refuse: the module
-      is imported or executed on the training path, which is the hazard the rule
-      names. The reference NUMBERS live in manifest files, and with ``_args_``
-      refused there is still no config-only shape that can CALL the loader.
+      Impact: the module is imported or executed on the training path, which is
+      the hazard the rule names.
+
+      **THE OLD BOUND HERE WAS FALSE AND IS RETRACTED.** It said the reference
+      NUMBERS were safe because ``_args_`` is refused so "no config-only shape
+      can CALL the loader". That bounded a hazard by ONE LOADER'S NAME -- the
+      same failure this whole slice is about, committed in an impact bound
+      instead of in a rule, and it shipped. MEASURED by an independent verifier
+      at ``96f64f6``::
+
+          runner:
+            load:
+              _target_: omegaconf.OmegaConf.load
+              file_: experiments/atomistic/he-importance/manifests/evaluation.yaml
+
+      That VALIDATES, and instantiating it returns ``reference.energy ==
+      -2.9037243770341195``. It needs no module path and trips no token: the
+      manifest's own file path tokenizes to nothing this schema denies. The
+      numbers are reachable without touching ``tpen.hi_manifest`` at all.
+
+      Filed as its own item under Amendment C rather than fixed here. It does
+      not falsify the acceptance contract, which explicitly excludes runtime
+      isolation of the reference -- but nothing in this module may claim the
+      numbers are out of reach, and until that item lands, they are not.
     - **Resolvers supplying a denied capability under an undenied name.** Closed
       by moving to an allowlist; see ``allowed_resolvers`` on
       :data:`HI_TRAIN_POLICY`.

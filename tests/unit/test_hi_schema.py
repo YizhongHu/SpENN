@@ -1485,7 +1485,9 @@ class TestTheReferenceModuleCannotArriveAsDATA:
                 {"_target_": "runpy.run_path", "path_name": "tpen/hi_manifest.py"},
             ),
             (
-                "import hook with a relative level",
+                # VALIDATION-GAP ARM ONLY: accepted by the schema, but does NOT
+                # reach the module through Hydra (DictConfig != dict).
+                "import hook with a relative level (does not reach, via Hydra)",
                 {
                     "_target_": "builtins.__import__",
                     "name": "hi_manifest",
@@ -1500,9 +1502,21 @@ class TestTheReferenceModuleCannotArriveAsDATA:
     ) -> None:
         """A RED-BY-DESIGN record of a known-open escape, filed as `fb70cf90`.
 
-        This test asserts the CURRENT, WRONG behaviour on purpose. Each spec
-        below VALIDATES and, at construction, imports or executes the
-        reference-holder module on the training path. Measured at ``745de1e``.
+        This test asserts the CURRENT, WRONG behaviour on purpose. Every spec
+        below VALIDATES, which is the defect under record.
+
+        **THEY DO NOT ALL REACH THE MODULE, and the earlier wording here said
+        they did.** Measured through Hydra, which is the path that matters:
+        the relative-import and ``runpy.run_path`` specs REACH it; the
+        ``builtins.__import__`` spec does NOT -- it dies
+        ``TypeError('globals must be a dict')``, because OmegaConf hands Hydra a
+        ``DictConfig`` for that argument rather than a real dict. It reaches the
+        module when called directly from Python with a real dict, which is how
+        the wrong claim was made: **the mechanism was verified in a shell and
+        the CONSTRUCTION PATH was not.**
+
+        The third spec is kept, as a validation-gap arm rather than a
+        reachability arm, and labelled so.
 
         Why assert the defect rather than delete the case: a known-open hole
         with no executable trace is indistinguishable from one nobody found. If
