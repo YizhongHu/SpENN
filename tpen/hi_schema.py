@@ -62,6 +62,7 @@ from tpen.config_schema import (
 __all__ = [
     "ADMITTED_CALLBACK_TARGETS",
     "ADMITTED_METHOD_TARGETS",
+    "ADMITTED_UPDATE_METHOD_TARGETS",
     "REFERENCE_MANIFEST_MODULE",
     "HI_METHOD_ROSTER",
     "MethodAvailability",
@@ -354,8 +355,54 @@ HI_METHOD_ROSTER: tuple[MethodAvailability, ...] = (
     ),
 )
 
+# SCOPED TO ``optimizer._target_``, and to nothing else. The roster answers
+# "which optimizer may a cell name", so this set is the only thing
+# `_sweep_method` compares against -- and for a long while it was the only
+# method qualification in the schema at all, which read as though naming a
+# method anywhere was covered. It is not: the UPDATE RULE is selected by
+# ``trainer.update_method``, an independent surface with its own allowlist
+# below. A reader who meets this set should meet that fact here rather than
+# discover it from a run.
 ADMITTED_METHOD_TARGETS = frozenset(
     entry.target for entry in HI_METHOD_ROSTER if entry.admitted and entry.target
+)
+
+
+# ---------------------------------------------------------------------------
+# Admitted update methods
+# ---------------------------------------------------------------------------
+# THE SECOND HALF OF METHOD ADMISSION. `VMCTrainer` takes an `update_method`
+# spec, and `_select_update_method` resolves a Hydra ``_partial_`` block into
+# the object that performs every parameter update. So a configuration selects
+# its update RULE here and its optimizer in `optimizer` -- two surfaces, and
+# only the second was qualified. `tpen.training.sr.StochasticReconfigurationUpdate`
+# named here was admitted unqualified even though the roster records SR as
+# EXCLUDED from this study.
+#
+# The observed example is a PRECONSTRUCTION gap rather than a successful
+# unadmitted run: SR with Adam is refused later by the SR constructor. That is
+# what makes this lower severity than the other holes, and it is not a reason to
+# leave it open -- "some other component happens to refuse it" is a property of
+# today's constructors, not a rule, and the schema's job is to refuse before
+# anything is constructed.
+#
+# ABSENCE IS ADMITTED, and it is what the control config does. `update_method:
+# null` (or omission) makes `_select_update_method` build `LegacyAutogradUpdate`
+# -- the plain optimizer step, which IS the admitted Adam method. Requiring the
+# declaration would refuse every shipped configuration.
+#
+# BOTH SPELLINGS of the admitted class are listed. `tpen.training.__init__`
+# re-exports it, so Hydra resolves either path to the same object, and an
+# allowlist that named one would refuse a configuration that is correct. A
+# FULL-PATH set rather than a trailing-component one, matching
+# :data:`ADMITTED_CALLBACK_TARGETS`: both are sets of executable targets, and a
+# trailing-component match would admit any class anywhere that happened to
+# share the name.
+ADMITTED_UPDATE_METHOD_TARGETS = frozenset(
+    {
+        "tpen.training.update.LegacyAutogradUpdate",
+        "tpen.training.LegacyAutogradUpdate",
+    }
 )
 
 # Adam coordinates that §2.7 fixes for every cell. ``lr`` and ``beta2`` are
@@ -987,6 +1034,89 @@ def _sweep_electron_nucleus_law(resolved_tree: Any) -> list[Rejection]:
     return rejections
 
 
+def _sweep_update_method(resolved_tree: Any) -> list[Rejection]:
+    """Reject a ``trainer.update_method`` outside the admitted set.
+
+    Parameters
+    ----------
+    resolved_tree : Any
+        The tree to check -- the configuration root, or a component view.
+
+    Returns
+    -------
+    list of Rejection
+        One rejection when the declared update method is not admitted.
+
+    Notes
+    -----
+    :func:`_sweep_method` qualifies ``optimizer._target_``. This qualifies the
+    other half: the rule that performs the update. They are independent
+    surfaces, and a configuration naming Adam in one and an unadmitted update
+    rule in the other passed the roster completely.
+
+    PRESENCE-SCOPED, like every other component rule. An absent or null
+    ``update_method`` resolves to ``LegacyAutogradUpdate`` -- the plain
+    optimizer step, which is the admitted method -- and is what every shipped
+    configuration does, so requiring the declaration would refuse them all.
+    """
+
+    trainer_found, trainer = _select(resolved_tree, "trainer")
+    if not trainer_found or not isinstance(trainer, Mapping):
+        return []
+    if "update_method" not in trainer:
+        return []
+    spec = trainer["update_method"]
+    if spec is None:
+        return []
+
+    admitted = sorted(ADMITTED_UPDATE_METHOD_TARGETS)
+    if not isinstance(spec, Mapping):
+        return [
+            Rejection(
+                rule="unadmitted-update-method",
+                tree="resolved",
+                path="trainer.update_method",
+                detail=(
+                    f"update_method must be a config block declaring a _target_, got "
+                    f"{type(spec).__name__}. Admitted: {admitted}. "
+                    f"Roster: {_roster_summary()}"
+                ),
+            )
+        ]
+
+    target = spec.get("_target_")
+    if not isinstance(target, str):
+        return [
+            Rejection(
+                rule="unadmitted-update-method",
+                tree="resolved",
+                path="trainer.update_method._target_",
+                detail=(
+                    "a declared update_method must name a _target_; there is nothing to "
+                    f"qualify otherwise. Admitted: {admitted}. Roster: {_roster_summary()}"
+                ),
+            )
+        ]
+
+    if target not in ADMITTED_UPDATE_METHOD_TARGETS:
+        return [
+            Rejection(
+                rule="unadmitted-update-method",
+                tree="resolved",
+                path="trainer.update_method._target_",
+                detail=(
+                    f"update rule {target!r} is not admitted. The optimizer roster qualifies "
+                    "optimizer._target_ only, so an unadmitted update rule reached "
+                    "construction with an admitted optimizer beside it. Refused rather than "
+                    "replaced, for the same reason an unavailable optimizer is: a method that "
+                    "quietly became the default would let a run report that it exercised "
+                    f"something it never ran. Admitted: {admitted}. Roster: {_roster_summary()}"
+                ),
+            )
+        ]
+    return []
+
+
 # ---------------------------------------------------------------------------
 # Closing over the components that are actually CONSTRUCTED
 # ---------------------------------------------------------------------------
@@ -1028,6 +1158,7 @@ _COMPONENT_SWEEPS = (
     _sweep_frozen_architecture,
     _sweep_electron_nucleus_law,
     _sweep_nonfinite_local_energy_policy,
+    _sweep_update_method,
 )
 
 

@@ -19,6 +19,7 @@ from tpen.hi_schema import (
     ADMITTED_METHOD_TARGETS,
     HI_EXPERIMENT_NAME,
     HI_METHOD_ROSTER,
+    ADMITTED_UPDATE_METHOD_TARGETS,
     HI_TRAIN_POLICY,
     HI_TRAIN_SCHEMA,
     REFERENCE_MANIFEST_MODULE,
@@ -324,6 +325,154 @@ class TestForbiddenSurfaces:
                 f"{section}.{key} did not trip the stop-rule family; the guard "
                 "recognises only spellings someone thought of in advance"
             )
+
+
+class TestAdmittedUpdateMethods:
+    """The optimizer roster qualifies ``optimizer._target_`` and nothing else.
+
+    A configuration selects its update RULE at ``trainer.update_method`` and its
+    optimizer at ``optimizer``. Those are two surfaces and only the second was
+    qualified, so a config could name Adam -- admitted, roster-clean -- and an
+    unadmitted update rule beside it.
+
+    SEVERITY, RECORDED HONESTLY: the observed example is a PRECONSTRUCTION gap
+    rather than a successful unadmitted run, because SR with Adam is refused
+    later by the SR constructor. "Some other component happens to refuse it" is
+    a property of today's constructors and not a rule, which is why it is closed
+    here rather than left to them.
+    """
+
+    SR_UPDATE = "tpen.training.sr.StochasticReconfigurationUpdate"
+
+    def _trainer(self, **extra: object) -> dict[str, object]:
+        return {
+            "_target_": "tpen.training.trainer.VMCTrainer",
+            "nonfinite_local_energy_policy": "fail",
+            **extra,
+        }
+
+    def test_the_roster_and_the_update_allowlist_are_different_surfaces(self) -> None:
+        """Pins the SCOPE claim rather than the prose that states it.
+
+        A reader meeting ``ADMITTED_METHOD_TARGETS`` has to know it governs
+        optimizers only. Asserting the two sets are disjoint, and that SR's
+        update class is in neither, is what keeps that true if either set moves.
+        """
+
+        assert ADMITTED_METHOD_TARGETS.isdisjoint(ADMITTED_UPDATE_METHOD_TARGETS)
+        assert self.SR_UPDATE not in ADMITTED_METHOD_TARGETS
+        assert self.SR_UPDATE not in ADMITTED_UPDATE_METHOD_TARGETS
+
+    def test_rejects_an_unadmitted_update_rule_beside_an_admitted_optimizer(self) -> None:
+        """The finding's exact shape: the roster passes and the rule does not."""
+
+        cfg = _config(
+            run={"run_id": "x"},
+            trainer=self._trainer(update_method={"_target_": self.SR_UPDATE, "_partial_": True}),
+        )
+        with pytest.raises(ClosedSchemaError) as caught:
+            _validate(cfg)
+        assert "unadmitted-update-method" in _rules(caught.value)
+        assert "unadmitted-method" not in _rules(caught.value), (
+            "the optimizer roster must NOT have fired -- Adam is admitted. If it did, "
+            "this arm is measuring the wrong rule"
+        )
+        assert "trainer.update_method._target_" in _paths(caught.value)
+
+    def test_the_refusal_states_what_the_roster_says(self) -> None:
+        cfg = _config(
+            run={"run_id": "x"},
+            trainer=self._trainer(update_method={"_target_": self.SR_UPDATE}),
+        )
+        with pytest.raises(ClosedSchemaError) as caught:
+            _validate(cfg)
+        detail = " ".join(r.detail for r in caught.value.rejections)
+        assert "EXCLUDED from the helium-importance scan" in detail
+        assert "optimizer._target_ only" in detail
+
+    def test_rejects_an_update_method_that_declares_no_target(self) -> None:
+        cfg = _config(
+            run={"run_id": "x"},
+            trainer=self._trainer(update_method={"damping": 0.001}),
+        )
+        with pytest.raises(ClosedSchemaError) as caught:
+            _validate(cfg)
+        assert "trainer.update_method._target_" in _paths(caught.value)
+
+    def test_rejects_an_update_method_that_is_not_a_config_block(self) -> None:
+        cfg = _config(run={"run_id": "x"}, trainer=self._trainer(update_method="sr"))
+        with pytest.raises(ClosedSchemaError) as caught:
+            _validate(cfg)
+        assert "trainer.update_method" in _paths(caught.value)
+
+    def test_rejects_an_unadmitted_update_rule_in_the_runner_view(self) -> None:
+        """The two fixes compose: an unqualified rule under `runner` is caught."""
+
+        cfg, trainer = _control_with_literal_runner_copy("trainer")
+        trainer.update_method = OmegaConf.create({"_target_": self.SR_UPDATE})
+        with pytest.raises(ClosedSchemaError) as caught:
+            _validate(cfg)
+        assert "runner.trainer.update_method._target_" in _paths(caught.value)
+
+    def test_an_omitted_update_method_is_admitted(self) -> None:
+        """What every shipped configuration does.
+
+        Absence resolves to `LegacyAutogradUpdate`, the plain optimizer step,
+        which IS the admitted Adam method. Requiring the declaration would
+        refuse the control config.
+        """
+
+        _validate(_config(run={"run_id": "x"}, trainer=self._trainer()))
+
+    def test_an_explicitly_null_update_method_is_admitted(self) -> None:
+        _validate(_config(run={"run_id": "x"}, trainer=self._trainer(update_method=None)))
+
+    @pytest.mark.parametrize(
+        "target",
+        [
+            # SPELLED OUT, NOT DRAWN FROM THE SET UNDER TEST. Parametrizing over
+            # `ADMITTED_UPDATE_METHOD_TARGETS` made the arms vary WITH the
+            # subject: removing a spelling from the allowlist removed the arm
+            # that would have caught it, and a mutant that dropped the alias
+            # left the whole suite green. The arms have to vary independently of
+            # the thing they measure or they measure nothing.
+            "tpen.training.update.LegacyAutogradUpdate",
+            "tpen.training.LegacyAutogradUpdate",
+        ],
+    )
+    def test_accepts_every_admitted_spelling(self, target: str) -> None:
+        """One arm per spelling, because `tpen.training` re-exports the class.
+
+        Hydra resolves either path to the same object, so an allowlist naming
+        one would refuse a configuration that is correct -- an over-restriction
+        that surfaces as a run that cannot start.
+        """
+
+        assert target in ADMITTED_UPDATE_METHOD_TARGETS
+        _validate(
+            _config(
+                run={"run_id": "x"},
+                trainer=self._trainer(update_method={"_target_": target, "_partial_": True}),
+            )
+        )
+
+    def test_the_admitted_spellings_name_the_same_class(self) -> None:
+        """Guards the allowlist against an entry that resolves nowhere.
+
+        Two strings in a set look equally valid; only importing them shows that
+        both name the class the trainer actually falls back to. Skipped where
+        torch is absent, because importing `tpen.training` needs it.
+        """
+
+        torch_backed = pytest.importorskip("tpen.training", reason="needs torch")
+        from importlib import import_module
+
+        resolved = set()
+        for target in ADMITTED_UPDATE_METHOD_TARGETS:
+            module_path, _, attribute = target.rpartition(".")
+            resolved.add(getattr(import_module(module_path), attribute))
+        assert len(resolved) == 1
+        assert resolved == {torch_backed.LegacyAutogradUpdate}
 
 
 class TestTheRunnerViewIsValidatedToo:
