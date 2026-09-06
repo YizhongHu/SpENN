@@ -327,6 +327,134 @@ class TestForbiddenSurfaces:
             )
 
 
+class TestHamiltonianTermsAreFoundByShapeNotByKey:
+    """The terms may be a Mapping OR a Sequence, and the keys are the author's.
+
+    ``normalize_hamiltonian_terms`` accepts either, and a sequence falls back to
+    snake-case class names. So a dotted rule on
+    ``hamiltonian_terms.electron_nucleus.eps`` checks a NAME the config author
+    was never obliged to use.
+
+    MEASURED BEFORE THE CHANGE: with ``eps: 0.01`` the mapping form spelled
+    ``electron_nucleus`` was correctly refused, while the same Hamiltonian
+    written as a SEQUENCE, or as a mapping keyed ``en``, VALIDATED. No
+    ``_args_``, no wrapper -- ordinary keyword configuration.
+
+    The floor is not cosmetic: a nonzero one masks the near-nucleus
+    cancellation the local-energy qualification has to measure.
+
+    FOUND BY THE AUTHOR, not by the reviewer, while auditing whether the
+    name-shaped CLASS was closed after four instances of it had been fixed. It
+    was not. That is the answer to the question, and it is recorded here rather
+    than in a commit message because the next person to add a dotted rule to
+    this module needs it.
+    """
+
+    def _terms(self, shape: str, eps: float):
+        cfg = OmegaConf.load(_CONTROL_CONFIG)
+        terms = OmegaConf.to_container(cfg.hamiltonian_terms, resolve=True)
+        terms["electron_nucleus"]["eps"] = eps
+        if shape == "mapping":
+            cfg.hamiltonian_terms = OmegaConf.create(terms)
+        elif shape == "renamed":
+            terms["en"] = terms.pop("electron_nucleus")
+            cfg.hamiltonian_terms = OmegaConf.create(terms)
+        elif shape == "sequence":
+            cfg.hamiltonian_terms = OmegaConf.create(
+                [
+                    terms["kinetic"],
+                    terms["electron_nucleus"],
+                    terms["electron_electron"],
+                    terms["nucleus_nucleus"],
+                ]
+            )
+        else:  # pragma: no cover - guards a typo in a parametrization
+            raise AssertionError(shape)
+        return cfg
+
+    # Spelled out rather than derived from the rule, so narrowing the rule
+    # cannot silently remove the arm that proves the escape is closed.
+    SHAPES = ["mapping", "renamed", "sequence"]
+
+    @pytest.mark.parametrize("shape", SHAPES)
+    def test_a_nonzero_coulomb_floor_is_refused_in_any_shape(self, shape: str) -> None:
+        with pytest.raises(ClosedSchemaError) as caught:
+            _validate(self._terms(shape, 0.01))
+        assert "frozen-coordinate" in _rules(caught.value)
+
+    @pytest.mark.parametrize("shape", SHAPES)
+    def test_the_study_floor_validates_in_any_shape(self, shape: str) -> None:
+        """The over-restriction control: refuse the VALUE, never the shape."""
+
+        _validate(self._terms(shape, 0.0))
+
+    @pytest.mark.parametrize(
+        ("shape", "expected_path"),
+        [
+            ("mapping", "hamiltonian_terms.electron_nucleus.eps"),
+            ("renamed", "hamiltonian_terms.en.eps"),
+            ("sequence", "hamiltonian_terms[1].eps"),
+        ],
+    )
+    def test_the_reported_path_names_where_the_term_actually_is(
+        self, shape: str, expected_path: str
+    ) -> None:
+        """A path assuming one shape points at nothing in the other two."""
+
+        with pytest.raises(ClosedSchemaError) as caught:
+            _validate(self._terms(shape, 0.01))
+        assert expected_path in _paths(caught.value)
+
+    def test_an_omitted_floor_is_not_a_violation(self) -> None:
+        """Absence applies the constructor default, and that default IS 0.0.
+
+        Requiring the declaration would refuse configs that simply omit it,
+        which is the frozen-scalar precedent rather than the trainability one --
+        the distinction being whether the inherited value is the right one.
+        """
+
+        cfg = OmegaConf.load(_CONTROL_CONFIG)
+        del cfg.hamiltonian_terms.electron_nucleus.eps
+        _validate(cfg)
+
+    def test_a_term_without_a_target_is_not_constructible_anyway(self) -> None:
+        """The NARROWING this change makes, stated and pinned rather than hidden.
+
+        The old dotted rule fired on any node at
+        ``hamiltonian_terms.electron_nucleus.eps``, including one with no
+        ``_target_``. The shape-based rule identifies a term by its target, so
+        such a node is no longer matched. That loses no real coverage, and this
+        asserts WHY rather than asking a reader to trust it:
+        ``normalize_hamiltonian_terms`` requires every term to expose a callable
+        ``local_energy``, so a bare mapping fails loudly at construction.
+
+        A narrowing justified by "the other layer catches it" is exactly the
+        claim this slice got wrong about transitive imports, so the other layer
+        is exercised here rather than cited.
+        """
+
+        pytest.importorskip("torch", reason="tpen.physics.hamiltonian imports torch")
+        from tpen.physics.hamiltonian import normalize_hamiltonian_terms
+
+        with pytest.raises(TypeError, match="local_energy"):
+            normalize_hamiltonian_terms({"electron_nucleus": {"eps": 1e-8}})
+
+    def test_the_electron_electron_floor_is_deliberately_unpinned(self) -> None:
+        """Scope control: this fixed an ESCAPE, it did not add a constraint.
+
+        ``ElectronElectronInteraction`` also takes ``eps`` and also defaults to
+        0.0, but no slice has pinned it and its own docstring records the
+        finite-eps electron-electron case as UNMEASURED. Pinning it here would
+        be a new scientific constraint smuggled in under a bug fix. If a later
+        slice decides to pin it, this test is the one to delete, and deleting it
+        should require saying why.
+        """
+
+        cfg = OmegaConf.load(_CONTROL_CONFIG)
+        cfg.hamiltonian_terms.electron_electron.eps = 0.01
+        _validate(cfg)
+
+
 class TestFactorsAreFoundByShapeNotByContainer:
     """A factor is what its ``_target_`` says, not where the config puts it.
 
@@ -1258,7 +1386,20 @@ class TestFrozenArchitecture:
         [
             ("system", {"spatial_dim": 2}),
             ("runtime", {"dtype": "float32"}),
-            ("hamiltonian_terms", {"electron_nucleus": {"eps": 1e-8}}),
+            # Carries a ``_target_`` because that is what identifies a TERM.
+            # See TestHamiltonianTermsAreFoundByShapeNotByKey for why the rule
+            # matches on the target rather than on the key, and
+            # test_a_term_without_a_target_is_not_constructible_anyway for why
+            # narrowing to targets loses no real coverage.
+            (
+                "hamiltonian_terms",
+                {
+                    "electron_nucleus": {
+                        "_target_": "tpen.physics.potential.ElectronNucleusPotential",
+                        "eps": 1e-8,
+                    }
+                },
+            ),
         ],
     )
     def test_rejects_a_moved_scalar(self, section: str, body: dict) -> None:
@@ -1271,7 +1412,12 @@ class TestFrozenArchitecture:
             _config(
                 system={"spatial_dim": 3},
                 runtime={"dtype": "float64"},
-                hamiltonian_terms={"electron_nucleus": {"eps": 0.0}},
+                hamiltonian_terms={
+                    "electron_nucleus": {
+                        "_target_": "tpen.physics.potential.ElectronNucleusPotential",
+                        "eps": 0.0,
+                    }
+                },
             )
         )
 

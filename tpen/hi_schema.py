@@ -685,10 +685,44 @@ _FROZEN_MODEL_KEYS: dict[str, tuple[object, str]] = {
 _FROZEN_SCALARS: dict[str, tuple[object, str]] = {
     "system.spatial_dim": (3, "spatial dimension 3 (literal control, system/numerics)"),
     "runtime.dtype": ("float64", "float64 (literal control, system/numerics)"),
-    "hamiltonian_terms.electron_nucleus.eps": (
-        0.0,
-        "Coulomb distance floor 0.0; a floor would mask near-nucleus cancellation",
-    ),
+}
+
+# Hamiltonian-term coordinates the study does NOT vary, keyed by the trailing
+# component of the term's ``_target_`` and then by argument name.
+#
+# BY SHAPE, NOT BY PATH, and this replaces a dotted
+# ``hamiltonian_terms.electron_nucleus.eps`` entry in the table above that was
+# ESCAPABLE with ordinary keyword config. ``normalize_hamiltonian_terms``
+# accepts a Mapping OR a Sequence -- a sequence falls back to snake-case class
+# names -- and the mapping's keys are the author's choice, not the schema's. So
+# both of these construct the same Hamiltonian while defeating a dotted path:
+#
+#     hamiltonian_terms:            hamiltonian_terms:
+#       - _target_: ...Kinetic        en:
+#       - _target_: ...ElectronNucleus  _target_: ...ElectronNucleusPotential
+#         eps: 0.01                     eps: 0.01
+#
+# MEASURED: both validated with ``eps: 0.01`` while the mapping form spelled
+# ``electron_nucleus`` was correctly refused. The floor matters -- a nonzero one
+# masks the near-nucleus cancellation the local-energy qualification has to
+# measure -- so the rule now identifies the term by WHAT IT IS.
+#
+# ABSENT IS ADMISSIBLE: ``ElectronNucleusPotential.__init__`` defaults ``eps``
+# to 0.0, so omitting it applies the value the study wants. Only a divergent
+# VALUE is refused, matching the frozen-scalar precedent above.
+#
+# DELIBERATELY NOT EXTENDED to the electron-electron floor. That term also
+# takes ``eps`` and also defaults to 0.0, but no slice has pinned it and its own
+# docstring records the finite-eps electron-electron case as UNMEASURED.
+# Pinning it here would be a new scientific constraint smuggled in under a
+# bug fix; it is FILED rather than added.
+_FROZEN_TERM_COORDINATES: dict[str, dict[str, tuple[object, str]]] = {
+    "ElectronNucleusPotential": {
+        "eps": (
+            0.0,
+            "Coulomb distance floor 0.0; a floor would mask near-nucleus cancellation",
+        ),
+    },
 }
 
 # Trainability must be DECLARED, never inherited. Absence is a violation here,
@@ -1014,6 +1048,67 @@ def _iter_factor_nodes(resolved_tree: Any) -> list[tuple[str, Mapping[str, Any],
     return found
 
 
+def _sweep_hamiltonian_terms(resolved_tree: Any) -> list[Rejection]:
+    """Reject a Hamiltonian term that moves a coordinate no arm may move.
+
+    Parameters
+    ----------
+    resolved_tree : Any
+        The tree to check -- the configuration root, or a component view.
+
+    Returns
+    -------
+    list of Rejection
+        One rejection per divergent coordinate, at any depth under
+        ``hamiltonian_terms``, in whatever container the terms arrive in.
+
+    Notes
+    -----
+    See :data:`_FROZEN_TERM_COORDINATES` for the measurement that motivated
+    matching on the term's ``_target_`` rather than on a dotted path. The short
+    version: the terms may be a Mapping or a Sequence, and when they are a
+    Mapping the KEYS are the config author's choice. A rule keyed on
+    ``electron_nucleus`` checks a name the author was never obliged to use.
+    """
+
+    found, terms = _select(resolved_tree, "hamiltonian_terms")
+    if not found or not isinstance(terms, (Mapping, list)):
+        return []
+    rejections: list[Rejection] = []
+    for path, _key, value in iter_nodes({"hamiltonian_terms": terms}):
+        if not isinstance(value, Mapping):
+            continue
+        target = value.get("_target_")
+        if not isinstance(target, str):
+            continue
+        coordinates = _FROZEN_TERM_COORDINATES.get(target.rsplit(".", 1)[-1])
+        if coordinates is None:
+            continue
+        for argument, (expected, authority) in coordinates.items():
+            if argument not in value:
+                # Absent means the constructor's own default applies, and for
+                # every coordinate in this table that default IS the study's
+                # value. Requiring the declaration would refuse configs that
+                # simply omit it.
+                continue
+            actual = value[argument]
+            matches = (
+                isinstance(actual, (int, float))
+                and not isinstance(actual, bool)
+                and float(actual) == float(expected)
+            )
+            if not matches:
+                rejections.append(
+                    Rejection(
+                        rule="frozen-coordinate",
+                        tree="resolved",
+                        path=f"{path}.{argument}",
+                        detail=f"expected {expected!r}, got {actual!r}: {authority}",
+                    )
+                )
+    return rejections
+
+
 def _sweep_trainability(resolved_tree: Mapping[str, Any]) -> list[Rejection]:
     """Require every trainability flag to be declared true, never inherited."""
 
@@ -1335,6 +1430,7 @@ _COMPONENT_KEYS = frozenset(
 # the whole resolved tree and therefore covers every view for free.
 _COMPONENT_SWEEPS = (
     _sweep_frozen_architecture,
+    _sweep_hamiltonian_terms,
     _sweep_electron_nucleus_law,
     _sweep_nonfinite_local_energy_policy,
     _sweep_update_method,
