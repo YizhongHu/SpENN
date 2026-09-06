@@ -624,6 +624,15 @@ class TestDeclaredTrainability:
         assert "model.factors[0].law.trainable" in _paths(caught.value)
 
     def test_accepts_fully_declared_factors(self) -> None:
+        """Uses the ADMITTED law.
+
+        This test previously named ``CurvatureElectronNucleusCuspLaw``, which
+        the law allowlist now refuses for this study. The change is deliberate,
+        not incidental: declaring trainability correctly is no longer
+        sufficient, because a fully declared unconstrained-tail law is exactly
+        the configuration the allowlist exists to stop.
+        """
+
         _validate(
             _config(
                 model={
@@ -631,7 +640,14 @@ class TestDeclaredTrainability:
                         {"_target_": "tpen.nn.ElectronElectronCusp", "trainable_range": True},
                         {
                             "_target_": "tpen.nn.ElectronNucleusCusp",
-                            "law": {"_target_": "tpen.nn.CurvatureElectronNucleusCuspLaw", "trainable": True},
+                            "law": {
+                                "_target_": "tpen.nn.TailSafeElectronNucleusCuspLaw",
+                                "trainable": True,
+                            },
+                        },
+                        {
+                            "_target_": "tpen.nn.BoundedTwoCoefficientJastrow",
+                            "trainable": True,
                         },
                     ]
                 }
@@ -639,9 +655,111 @@ class TestDeclaredTrainability:
         )
 
     def test_an_unknown_factor_is_not_given_a_trainability_rule(self) -> None:
-        """CD4 adds a new factor; it gets its own rule then, not a guessed one."""
+        """A factor with no registered rule is not guessed at.
+
+        ``BoundedTwoCoefficientJastrow`` now HAS a rule, registered when the
+        factor landed rather than when a config first used it. This test keeps
+        using a genuinely unregistered name, so it still measures the absence
+        of guessing rather than the absence of that one entry.
+        """
 
         _validate(_config(model={"factors": [{"_target_": "tpen.nn.SomeFutureJastrow"}]}))
+
+    def test_rejects_a_jastrow_that_omits_trainable(self) -> None:
+        """Both coefficients start at zero, so an inherited false is invisible.
+
+        The factor would evaluate to exactly 0 for the whole run -- an identity
+        multiplier -- with nothing in named_parameters(), nothing in
+        state_dict(), and no log line saying so.
+        """
+
+        cfg = _config(model={"factors": [{"_target_": "tpen.nn.BoundedTwoCoefficientJastrow"}]})
+        with pytest.raises(ClosedSchemaError) as caught:
+            _validate(cfg)
+        assert "model.factors[0].trainable" in _paths(caught.value)
+
+
+class TestTheElectronNucleusLawIsAdmitted:
+    """Selecting the wrong cusp law must fail closed, not run unbounded.
+
+    Independent of the trainability rule above. That rule asks whether the law
+    is TRAINED; this asks whether it is the RIGHT LAW, and a trainable
+    unconstrained-tail law satisfies the first completely while still being
+    able to train its way into a non-normalizable tail.
+    """
+
+    def _factors(self, law: object) -> dict:
+        return {
+            "factors": [
+                {"_target_": "tpen.nn.ElectronNucleusCusp", "law": law},
+            ]
+        }
+
+    def test_rejects_the_unconstrained_tail_law(self) -> None:
+        """The predecessor is refused even when fully and correctly declared."""
+
+        cfg = _config(
+            model=self._factors(
+                {"_target_": "tpen.nn.CurvatureElectronNucleusCuspLaw", "trainable": True}
+            )
+        )
+        with pytest.raises(ClosedSchemaError) as caught:
+            _validate(cfg)
+        assert "unadmitted-cusp-law" in _rules(caught.value)
+        assert "model.factors[0].law._target_" in _paths(caught.value)
+
+    def test_accepts_the_tail_safe_law(self) -> None:
+        """Over-restriction control.
+
+        Without this, an allowlist that admitted NOTHING would satisfy every
+        rejection test above and would only be discovered when a real run
+        could not start.
+        """
+
+        _validate(
+            _config(
+                model=self._factors(
+                    {"_target_": "tpen.nn.TailSafeElectronNucleusCuspLaw", "trainable": True}
+                )
+            )
+        )
+
+    def test_rejects_a_law_that_declares_no_target(self) -> None:
+        cfg = _config(model=self._factors({"trainable": True}))
+        with pytest.raises(ClosedSchemaError) as caught:
+            _validate(cfg)
+        assert "unadmitted-cusp-law" in _rules(caught.value)
+
+    def test_an_absent_law_is_reported_once_as_a_trainability_defect(self) -> None:
+        """One omission must not produce two differently named rejections.
+
+        A missing law already fails the trainability rule, which requires
+        ``law.trainable`` to be declared true. Reporting it a second time as an
+        unadmitted law would read as two independent defects and send a reader
+        looking for a second fix that does not exist.
+        """
+
+        cfg = _config(model={"factors": [{"_target_": "tpen.nn.ElectronNucleusCusp"}]})
+        with pytest.raises(ClosedSchemaError) as caught:
+            _validate(cfg)
+        assert "model.factors[0].law.trainable" in _paths(caught.value)
+        assert "unadmitted-cusp-law" not in _rules(caught.value)
+
+    def test_a_factor_that_is_not_the_en_cusp_is_left_alone(self) -> None:
+        """The rule is scoped to the electron-nucleus cusp, not to any 'law' key."""
+
+        _validate(
+            _config(
+                model={
+                    "factors": [
+                        {
+                            "_target_": "tpen.nn.SomeFutureFactor",
+                            "law": {"_target_": "tpen.nn.CurvatureElectronNucleusCuspLaw"},
+                        }
+                    ]
+                }
+            )
+        )
 
 
 class TestRankInvariance:

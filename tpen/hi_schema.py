@@ -534,6 +534,42 @@ _REQUIRED_FACTOR_TRAINABILITY: dict[str, tuple[str, str]] = {
         "law.trainable",
         "the e-n curvature law is trainable (literal control, e-n factor)",
     ),
+    # Registered when the factor landed rather than when a config first uses
+    # it. The failure this table exists to prevent -- a coefficient silently
+    # frozen at its initial value, absent from named_parameters() and
+    # state_dict() and therefore unlogged -- is available to this factor the
+    # moment someone adds it to a config, and a rule added later would arrive
+    # after the run that needed it.
+    "BoundedTwoCoefficientJastrow": (
+        "trainable",
+        "both Jastrow coefficients train; they start at zero, so an inherited "
+        "false leaves the factor as the identity for the whole run with nothing "
+        "to show for it",
+    ),
+}
+
+# ADMITTED electron-nucleus cusp laws, keyed by the trailing component of the
+# law's ``_target_``.
+#
+# An ALLOWLIST, for the same reason the callback set is one: the hazard is a law
+# nobody thought to forbid. A denylist would admit every cusp law written after
+# it, including the next unconstrained-tail variant.
+#
+# What membership MEANS here is a physical property, not a preference: the law's
+# outer radial slope is negative for every nucleus BY CONSTRUCTION, so no
+# training trajectory can reach a growing, non-normalizable tail.
+# `CurvatureElectronNucleusCuspLaw` is deliberately ABSENT. It is not
+# deprecated and remains correct for `experiments/atomistic/he-v1`, which is
+# written in its coordinates -- but its own docstring records that it does not
+# enforce ``c/d < Z``, so an HI arm selecting it could cross the sign change
+# mid-run with nothing raising. Refusing it at validation converts that into a
+# config error before anything is constructed, which is the only point at which
+# it is cheap to notice.
+_ADMITTED_ELECTRON_NUCLEUS_LAWS: dict[str, str] = {
+    "TailSafeElectronNucleusCuspLaw": (
+        "coordinates the curvature as c = d (Z - kappa), so the outer slope is "
+        "-kappa < 0 for every nucleus at every point in training"
+    ),
 }
 
 # Absent or null means no clipping, which is what the study requires, so this
@@ -685,6 +721,77 @@ def _sweep_trainability(resolved_tree: Mapping[str, Any]) -> list[Rejection]:
 # ---------------------------------------------------------------------------
 # Rank-invariant preconstruction
 # ---------------------------------------------------------------------------
+def _sweep_electron_nucleus_law(resolved_tree: Any) -> list[Rejection]:
+    """Reject an electron-nucleus cusp law outside the admitted set.
+
+    Separate from `_sweep_trainability`, which asks whether the law is TRAINED.
+    This asks whether it is the RIGHT LAW, and the two are independent: a
+    trainable unconstrained-tail law satisfies that rule completely while still
+    being able to train its way into a non-normalizable tail.
+
+    Parameters
+    ----------
+    resolved_tree : Any
+        Resolved configuration tree.
+
+    Returns
+    -------
+    list of Rejection
+        One rejection per factor naming an unadmitted or undeclared law.
+    """
+
+    rejections: list[Rejection] = []
+    factors = _select(resolved_tree, "model.factors")[1]
+    if not isinstance(factors, list):
+        return rejections
+    for index, factor in enumerate(factors):
+        if not isinstance(factor, Mapping):
+            continue
+        target = factor.get("_target_")
+        if not isinstance(target, str) or target.rsplit(".", 1)[-1] != "ElectronNucleusCusp":
+            continue
+        found, law = _select(factor, "law")
+        if not found or not isinstance(law, Mapping):
+            # An absent law is already fatal through the trainability rule,
+            # which requires `law.trainable` to be declared true. Not repeated
+            # here: two rejections for one omission would read as two defects.
+            continue
+        law_target = law.get("_target_")
+        path = f"model.factors[{index}].law._target_"
+        if not isinstance(law_target, str):
+            rejections.append(
+                Rejection(
+                    rule="unadmitted-cusp-law",
+                    tree="resolved",
+                    path=path,
+                    detail=(
+                        "the electron-nucleus cusp law must declare a _target_; admitted "
+                        f"laws are {sorted(_ADMITTED_ELECTRON_NUCLEUS_LAWS)}"
+                    ),
+                )
+            )
+            continue
+        name = law_target.rsplit(".", 1)[-1]
+        if name not in _ADMITTED_ELECTRON_NUCLEUS_LAWS:
+            admitted = ", ".join(
+                f"{key} ({reason})" for key, reason in sorted(_ADMITTED_ELECTRON_NUCLEUS_LAWS.items())
+            )
+            rejections.append(
+                Rejection(
+                    rule="unadmitted-cusp-law",
+                    tree="resolved",
+                    path=path,
+                    detail=(
+                        f"{law_target!r} is not admitted for this study. An admitted law must "
+                        "guarantee a decaying outer tail for every nucleus by construction, "
+                        "rather than leaving the bound to the caller. Admitted: "
+                        f"{admitted}"
+                    ),
+                )
+            )
+    return rejections
+
+
 def _sweep_rank_divergent_fields(resolved_tree: Any) -> list[Rejection]:
     """Reject fields that would resolve to a different value in each process.
 
@@ -953,6 +1060,7 @@ def validate_hi_train_config(cfg: DictConfig, *, env: Mapping[str, str] | None =
     rejections.extend(_sweep_callbacks(resolved_tree))
     rejections.extend(_sweep_method(resolved_tree))
     rejections.extend(_sweep_frozen_architecture(resolved_tree))
+    rejections.extend(_sweep_electron_nucleus_law(resolved_tree))
     rejections.extend(_sweep_rank_divergent_fields(resolved_tree))
     if rejections:
         raise ClosedSchemaError(rejections)
