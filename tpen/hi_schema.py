@@ -436,7 +436,36 @@ HI_TRAIN_POLICY = SchemaPolicy(
     # than the file and its overrides, so two ranks could resolve the same file
     # differently. ``oc.decode`` is included because it evaluates arbitrary text
     # that may itself be built from environment interpolation.
+    #
+    # KEPT FOR ITS MESSAGES, NOT FOR ITS COVERAGE. The allowlist below already
+    # refuses all four; naming them keeps a config that reaches for the obvious
+    # one getting the specific reason rather than the generic refusal.
     forbidden_resolvers=frozenset({"oc.env", "env", "now", "oc.decode"}),
+    # THE CLOSED SET OF RESOLVER CALLS, and it is EMPTY.
+    #
+    # A DENYLIST WAS BEATEN TWICE HERE. First by nesting: a forbidden resolver
+    # inside a permitted one was invisible to a regex that stopped at the first
+    # closing brace. Then by an unnamed sibling: ``oc.decode`` was refused by
+    # NAME for evaluating arbitrary text, and ``oc.create`` does the same job
+    # under a different name AND re-resolves interpolations in its output.
+    # MEASURED at the previous head: a config carrying ``oc.create`` around a
+    # YAML string whose unicode escapes hid the interpolation opener from the
+    # raw sweep resolved ``run.run_id`` to ``rank_7`` from ``SLURM_PROCID``.
+    # Every rank would resolve a different identity while the rank-divergence
+    # rule passed, because the id was non-null, and the canonical digest would
+    # report a difference it could not explain.
+    #
+    # That is this slice's own class applied to the resolver rule: a rule that
+    # reads NAMES defeated by something supplying the same capability without
+    # that name. The set of text-evaluating resolvers is open-ended and grows
+    # with OmegaConf. The set this study needs is not.
+    #
+    # EMPTY IS MEASURED, NOT ASPIRATIONAL: the shipped control config contains
+    # 32 plain node references and ZERO resolver calls, so this refuses nothing
+    # that exists. Node references such as ``${system.spatial_dim}`` are
+    # untouched -- they name configuration, not a resolver. Admitting one later
+    # is a schema change, which is the point: it becomes visible in review.
+    allowed_resolvers=frozenset(),
 )
 
 
@@ -620,9 +649,35 @@ def _sweep_target_values(resolved_tree: Any) -> list[Rejection]:
 
     rejections: list[Rejection] = []
     for path, key, value in iter_nodes(resolved_tree):
-        if key != "_target_" or not isinstance(value, str):
+        if not isinstance(value, str):
             continue
         target = value.strip()
+        # THE MODULE-IDENTITY CHECK APPLIES TO EVERY STRING VALUE, not only to
+        # ``_target_``. A generic importer carries the module path as DATA under
+        # a key nobody tokenizes:
+        #
+        #     {_target_: importlib.import_module, name: tpen.hi_manifest}
+        #     {_target_: hydra.utils.get_method, path: tpen.hi_manifest.load_...}
+        #
+        # MEASURED: both VALIDATED in a free-form runner slot while the direct
+        # spelling in the same slot was refused, and recursive instantiation
+        # imports the reference-holder module onto the training path.
+        #
+        # ENUMERATING THE IMPORTERS WOULD BE THE SAME MISTAKE AGAIN --
+        # ``get_class``, ``get_object``, ``pydoc.locate``, ``pkgutil.resolve_name``
+        # and whatever is added next. Whatever the importer, the module path has
+        # to appear SOMEWHERE as a string, so the string is what is checked.
+        #
+        # Safe to widen because this is EXACT MODULE IDENTITY, not a token: it
+        # matches ``tpen.hi_manifest`` and its submodules and nothing else. The
+        # TOKEN check below stays scoped to ``_target_``, where the value names
+        # code that will run -- widening THAT to every value would refuse a run
+        # directory named ``outputs/baseline``.
+        #
+        # HONEST IMPACT BOUND, from the reviewer that found it: this makes the
+        # manifest module importable, which is the hazard the schema names. The
+        # reference NUMBERS live in manifest files, and with ``_args_`` refused
+        # there is no config-only shape that can CALL the loader.
         if target == REFERENCE_MANIFEST_MODULE or target.startswith(
             f"{REFERENCE_MANIFEST_MODULE}."
         ):
@@ -632,13 +687,19 @@ def _sweep_target_values(resolved_tree: Any) -> list[Rejection]:
                     tree="resolved",
                     path=path,
                     detail=(
-                        f"_target_ {target!r} is in {REFERENCE_MANIFEST_MODULE!r}, which holds "
-                        "the evaluation reference. Instantiating it would load the reference "
-                        "onto the training path, which is what this schema exists to prevent. "
-                        "The reference is read after training, by a separate process"
+                        f"{target!r} names {REFERENCE_MANIFEST_MODULE!r}, which holds the "
+                        "evaluation reference. Importing or instantiating it would load the "
+                        "reference onto the training path, which is what this schema exists to "
+                        "prevent. Checked on EVERY string value, not only on _target_: a "
+                        "generic importer such as importlib.import_module or "
+                        "hydra.utils.get_method carries the module path as an argument, so a "
+                        "rule reading only _target_ sees an innocuous importer. The reference "
+                        "is read after training, by a separate process"
                     ),
                 )
             )
+            continue
+        if key != "_target_":
             continue
         for surface in HI_TRAIN_POLICY.forbidden_surfaces:
             if surface.matches(target):
@@ -1060,10 +1121,47 @@ def _sweep_positional_construction(resolved_tree: Any) -> list[Rejection]:
     construction, the refusal is loud, names this function, and the remedy is to
     make the rules shape-based rather than to delete this one.
 
-    RESIDUAL, stated rather than papered over: this closes positional
-    construction. A component reached through a keyword the rules do not name --
-    a model hung from ``runner.net`` rather than ``runner.model`` -- is still
-    unjudged, and that is the same key-shaped weakness in a different spelling.
+    WHY THE FAMILY REFUSAL IS THE RIGHT INSTRUMENT, audited independently
+    rather than argued from taste. Hydra keyword construction binds a config key
+    to a CONSUMER PARAMETER NAME, and every consumer on the constructed path has
+    a strict signature: ``Train(model, sampler, hamiltonian_terms, optimizer,
+    trainer, load=None)``; ``VMCTrainer`` with exact names and no aliases;
+    ``LegacyAutogradUpdate(gradient_clip_norm)``; ``TPENWaveFunction``, whose
+    ``**kwargs`` forwards only to a strict ``EquivariantMap`` so an unknown key
+    is a TypeError rather than being stored and swallowed. So for keyword
+    supply, **the config key IS the parameter name at the consumer** -- which is
+    what grounds every key-at-any-depth rule in this module in construction
+    semantics rather than in convention.
+
+    ``_args_`` was the only config-reachable way to bind a parameter with NO
+    key. The alternate positional routes all dead-end: a ``functools.partial``
+    target needs ``_args_`` for its own positional-only argument, and
+    ``getattr``/``attrgetter``/``methodcaller`` are positional-only too. A
+    resolution-time ``_args_``, materialised through a resolver, is refused as
+    well, because the resolved sweep walks materialised containers.
+
+    RESIDUAL, CORRECTED. An earlier version of this paragraph named a model hung
+    from ``runner.net``. **That was the comfortable member and it is not
+    reachable at all**: ``Train`` has no such parameter, so it is a TypeError at
+    construction. Naming it read as candour while leaving the reachable
+    residuals unstated -- the second time in this slice that happened, and the
+    reviewer caught both.
+
+    The reachable residuals of this same class, as of this commit, are:
+
+    - **Generic importers carrying a module path as DATA.** Closed by widening
+      the module-identity check to every string value; see
+      :func:`_sweep_target_values`. The family -- ``get_class``, ``get_object``,
+      ``pydoc.locate``, ``pkgutil.resolve_name`` -- is open-ended, which is why
+      the check is on the PATH rather than on the importer.
+    - **Resolvers supplying a denied capability under an undenied name.** Closed
+      by moving to an allowlist; see ``allowed_resolvers`` on
+      :data:`HI_TRAIN_POLICY`.
+    - **Still open: a component reached through a keyword no rule names, in a
+      slot whose consumer does NOT have a strict signature.** No such slot is
+      known on the constructed path today, and the strict-signature audit above
+      is what makes that a bounded claim rather than an assumption. It is an
+      assumption about every consumer ADDED LATER, and nothing enforces it.
     """
 
     rejections: list[Rejection] = []
@@ -1910,6 +2008,27 @@ def validate_hi_train_config(cfg: DictConfig, *, env: Mapping[str, str] | None =
     -----
     A configuration that declares no schema, or a different one, is returned
     unvalidated -- see the module docstring on why the firewall is opt-in.
+
+    KNOWN AND DEFERRED, stated here because this is where a reader meets the
+    "refuse before anything is constructed" claim and that claim is narrower
+    than it sounds. **Resolution is not a read.** A registered OmegaConf
+    resolver RUNS during ``to_container(resolve=True)`` below, and
+    ``tpen.config`` registers ``tpen.basis_feature_dim``, which calls
+    ``hydra.utils.instantiate`` on its argument. MEASURED at head ``38edc53``:
+    a configuration pointing that resolver at ``builtins.open`` was correctly
+    REFUSED -- and the file it named had already been created, because the
+    callable ran while the tree was being resolved for the sweeps that would
+    refuse it.
+
+    So the claim holds for CONSTRUCTION and not for RESOLUTION. The closed
+    resolver allowlist means every such configuration IS refused; what is not
+    guaranteed is that it is refused BEFORE the resolver runs.
+
+    Deliberately NOT fixed in this slice. It is a new production surface rather
+    than one of the four construction-path holes this slice was scoped to, so
+    it is FILED rather than absorbed -- the remedy is a handful of lines and is
+    available, but scope is the manager's call and not this lane's to widen.
+    Found by an independent reviewer and labelled independent.
 
     The launch environment is audited alongside the configuration because the
     reference-energy firewall names it as one of the surfaces a reference must

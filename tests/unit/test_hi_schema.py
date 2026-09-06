@@ -13,7 +13,12 @@ from pathlib import Path
 import pytest
 from omegaconf import OmegaConf
 
-from tpen.config_schema import ClosedSchemaError, iter_nodes
+from tpen.config_schema import (
+    ClosedSchemaError,
+    iter_interpolations,
+    iter_nodes,
+    split_resolver,
+)
 from tpen.hi_schema import (
     ADMITTED_CALLBACK_TARGETS,
     ADMITTED_METHOD_TARGETS,
@@ -1313,6 +1318,127 @@ class TestTheRunnerViewIsValidatedToo:
         assert "runner.stages.warmup.trainer.gradient_clip_norm" in _paths(caught.value)
 
 
+class TestResolverAdmissionIsAnAllowlist:
+    """A denylist was beaten TWICE here, which is why the instrument changed.
+
+    First by nesting: a forbidden resolver inside a permitted one was invisible
+    to a pattern that stopped at the first closing brace. Then by an unnamed
+    sibling: ``oc.decode`` was refused BY NAME for evaluating arbitrary text,
+    and ``oc.create`` does the same job under a name nobody had listed, and
+    additionally RE-RESOLVES interpolations in its output.
+
+    MEASURED before the change, at head ``38edc53``: a config carrying
+    ``oc.create`` around a YAML string whose unicode escape hid the
+    interpolation opener from the raw sweep resolved ``run.run_id`` to
+    ``rank_7`` from ``SLURM_PROCID``. Every rank would resolve a DIFFERENT run
+    identity while the rank-divergence rule passed -- it only asks that
+    ``run_id`` be non-null -- and the canonical digest would faithfully report a
+    difference it could not explain.
+
+    That is this slice's own class applied to the resolver rule: a rule that
+    reads NAMES, defeated by something supplying the same capability without
+    that name.
+    """
+
+    def test_the_unnamed_sibling_of_a_denied_resolver_is_refused(self) -> None:
+        cfg = _config(
+            run={"run_id": "x"},
+            runtime={"blob": "${oc.create:'a: 1'}"},
+        )
+        with pytest.raises(ClosedSchemaError) as caught:
+            _validate(cfg)
+        assert "unadmitted-resolver" in _rules(caught.value)
+
+    def test_the_escape_that_motivated_this_is_refused_end_to_end(self) -> None:
+        """The exhibit, spelled the way it was measured.
+
+        The YAML text carries a unicode escape so the raw tree contains no
+        literal interpolation opener at all -- which is what made every
+        pre-existing raw sweep pass.
+        """
+
+        hidden = 'a: "\u0024{oc.env:SLURM_PROCID}"'
+        cfg = _config(
+            run={"blob": "${oc.create:'" + hidden + "'}", "run_id": "rank_${run.blob.a}"},
+        )
+        with pytest.raises(ClosedSchemaError) as caught:
+            _validate(cfg)
+        assert "unadmitted-resolver" in _rules(caught.value)
+
+    def test_a_named_forbidden_resolver_keeps_its_specific_reason(self) -> None:
+        """The denylist is retained for MESSAGES and must actually still fire.
+
+        A config reaching for ``oc.env`` should be told that it reads
+        process-local state, not merely that some resolver is unadmitted. The
+        denylist is therefore checked FIRST -- and this test is what makes that
+        claim true rather than a comment, since the allowlist alone would
+        refuse the same config with a generic reason.
+        """
+
+        cfg = _config(run={"run_id": "x"}, runtime={"seed": "${oc.env:RANK,0}"})
+        with pytest.raises(ClosedSchemaError) as caught:
+            _validate(cfg)
+        rules = _rules(caught.value)
+        assert "forbidden-resolver" in rules
+        assert "unadmitted-resolver" not in rules, (
+            "one expression must yield one finding; reporting both reads as two defects"
+        )
+
+
+class TestTheReferenceModuleCannotArriveAsDATA:
+    """A generic importer carries the module path under a key nobody tokenizes.
+
+    MEASURED at ``38edc53``: ``{_target_: importlib.import_module, name:
+    tpen.hi_manifest}`` and ``{_target_: hydra.utils.get_method, path:
+    tpen.hi_manifest.load_evaluation_manifest}`` both VALIDATED in a free-form
+    runner slot, while the direct spelling in the same slot was refused.
+
+    ENUMERATING THE IMPORTERS WOULD BE THE SAME MISTAKE AGAIN -- ``get_class``,
+    ``get_object``, ``pydoc.locate``, ``pkgutil.resolve_name``, and whatever
+    lands next. Whatever the importer, the module path must appear SOMEWHERE as
+    a string, so the string is what is checked.
+    """
+
+    @pytest.mark.parametrize(
+        "spec",
+        [
+            {"_target_": "importlib.import_module", "name": "tpen.hi_manifest"},
+            {
+                "_target_": "hydra.utils.get_method",
+                "path": "tpen.hi_manifest.load_evaluation_manifest",
+            },
+            {"_target_": "pydoc.locate", "name": "tpen.hi_manifest.reference_energy"},
+            # Not an importer at all -- the path as a plain string argument.
+            {"_target_": "tpen.callback.Metadata", "note": "tpen.hi_manifest"},
+        ],
+    )
+    def test_the_module_path_is_refused_wherever_it_appears(self, spec: dict) -> None:
+        cfg = _config(run={"run_id": "x"}, runner={"_target_": "tpen.runner.Train", "load": spec})
+        with pytest.raises(ClosedSchemaError) as caught:
+            _validate(cfg)
+        assert "forbidden-target:reference-module" in _rules(caught.value)
+
+    def test_the_token_check_stays_scoped_to_target(self) -> None:
+        """Only MODULE IDENTITY widened; the token check did not.
+
+        Widening the token check to every value would refuse a run directory
+        named ``outputs/baseline``, which executes nothing. Exact module
+        identity is safe to widen precisely because it is not a token.
+        """
+
+        _validate(_config(run={"root": "outputs/baseline_sweep", "run_id": "x"}))
+
+    def test_a_similarly_named_module_is_not_caught(self) -> None:
+        """The identity check must not fire on a prefix that merely looks alike."""
+
+        _validate(
+            _config(
+                run={"run_id": "x"},
+                runner={"_target_": "tpen.runner.Train", "note": "tpen.hi_manifesto.thing"},
+            )
+        )
+
+
 class TestExecutableTargets:
     """A ``_target_`` is executable, so its VALUE is checked, not only its key.
 
@@ -1488,20 +1614,75 @@ class TestForbiddenResolvers:
             _validate(cfg)
         assert "forbidden-resolver" in _rules(caught.value)
 
-    def test_accepts_a_nested_reference_that_reaches_no_forbidden_resolver(self) -> None:
-        """The over-restriction control for the rule above.
+    def test_a_permitted_resolver_is_now_refused_by_the_ALLOWLIST(self) -> None:
+        """DELIBERATE WIDENING, and this test was inverted rather than deleted.
 
-        Refusing every nested expression would satisfy the four arms above while
-        making ordinary layered defaults unwritable. Over-restriction here would
-        not fail a test; it would fail a run.
+        It previously asserted that ``oc.select`` is ACCEPTED, as the
+        over-restriction control for the nested-resolver rule under a DENYLIST.
+        The policy has since moved to an allowlist, and the allowlist is empty,
+        so every resolver CALL is refused and this configuration no longer
+        validates.
+
+        Inverted rather than removed on purpose. A deleted test leaves no trace
+        that the behaviour changed; this one records that the change was a
+        decision, names the rule that now fires, and will fail loudly if
+        somebody re-admits ``oc.select`` without saying why.
+
+        The doctrine change is not a preference. A denylist was beaten twice
+        here -- once by nesting, once by ``oc.create`` supplying ``oc.decode``'s
+        text-evaluation capability under a name nobody had listed.
+        """
+
+        cfg = _config(
+            system={"spatial_dim": 3},
+            model={"spatial_dim": "${oc.select:model.missing,${system.spatial_dim}}"},
+        )
+        with pytest.raises(ClosedSchemaError) as caught:
+            _validate(cfg)
+        assert "unadmitted-resolver" in _rules(caught.value)
+
+    def test_plain_node_references_are_untouched_by_the_allowlist(self) -> None:
+        """THE over-restriction control, and the one that now carries the weight.
+
+        An empty resolver allowlist would be catastrophic if it also refused
+        node references: the shipped config contains 32 of them and would not
+        validate. The discriminator is that a reference names CONFIGURATION and
+        a call names a RESOLVER, so nesting and computed paths stay writable.
         """
 
         _validate(
             _config(
                 system={"spatial_dim": 3},
-                model={"spatial_dim": "${oc.select:model.missing,${system.spatial_dim}}"},
+                runtime={"seed": 0},
+                model={
+                    "spatial_dim": "${system.spatial_dim}",
+                    "seed": "${runtime.seed}",
+                    "nested": "${model.spatial_dim}",
+                },
             )
         )
+
+    def test_the_shipped_config_uses_no_resolver_calls(self) -> None:
+        """The measurement that makes an EMPTY allowlist defensible.
+
+        Refusing every resolver call is only reasonable while nothing shipped
+        makes one. That is asserted here rather than written in a comment,
+        because a comment keeps saying so after it stops being true.
+        """
+
+        raw = OmegaConf.to_container(OmegaConf.load(_CONTROL_CONFIG), resolve=False)
+        calls, references = [], 0
+        for path, _key, value in iter_nodes(raw):
+            if not isinstance(value, str):
+                continue
+            for expression in iter_interpolations(value):
+                name, is_call = split_resolver(expression)
+                if is_call:
+                    calls.append((path, name))
+                else:
+                    references += 1
+        assert calls == [], calls
+        assert references > 0, "no interpolations found at all; this test would pass vacuously"
 
 
 class TestAdmittedMethods:

@@ -207,13 +207,29 @@ class SchemaPolicy:
         Interpolation resolver names refused in the raw tree. These are the
         mechanism by which process-local facts (environment, clock, randomness)
         would otherwise reach a resolved configuration and make it differ
-        between ranks.
+        between ranks. A DENYLIST, and see ``allowed_resolvers`` for when that
+        is the wrong instrument.
+    allowed_resolvers : frozenset of str or None
+        When not ``None``, the CLOSED set of resolver names a configuration may
+        call; every other resolver call is refused. ``None`` leaves the policy
+        on ``forbidden_resolvers`` alone.
+
+        A DENYLIST CANNOT WORK HERE AND THIS PROJECT HAS THE MEASUREMENTS.
+        ``oc.decode`` was refused by name because it evaluates arbitrary text;
+        ``oc.create`` does the same job, is not on any list, and additionally
+        RE-RESOLVES interpolations in its output -- so a config carrying
+        ``${oc.create:...}`` around a YAML string whose unicode escapes hide the
+        interpolation opener reached the environment while every raw sweep
+        passed. Refusing that one name would leave the next sibling. The set of
+        resolvers that can evaluate text is open-ended and grows with OmegaConf;
+        the set a study actually needs is small, closed, and known.
     """
 
     name: str
     forbidden_surfaces: tuple[ForbiddenSurface, ...] = ()
     allowed_sections: frozenset[str] = field(default_factory=frozenset)
     forbidden_resolvers: frozenset[str] = field(default_factory=frozenset)
+    allowed_resolvers: frozenset[str] | None = None
 
 
 def iter_nodes(tree: Any, prefix: str = "") -> Iterator[tuple[str, Any, Any]]:
@@ -462,7 +478,7 @@ def _sweep_forbidden_resolvers(raw_tree: Any, policy: SchemaPolicy) -> list[Reje
     walks braces instead of matching a pattern.
     """
 
-    if not policy.forbidden_resolvers:
+    if not policy.forbidden_resolvers and policy.allowed_resolvers is None:
         return []
 
     rejections: list[Rejection] = []
@@ -520,6 +536,30 @@ def _sweep_forbidden_resolvers(raw_tree: Any, policy: SchemaPolicy) -> list[Reje
                         ),
                     )
                 )
+                # The named reason is the more useful one, so it stands alone.
+                # Reporting the generic refusal beside it would be two findings
+                # for one expression, which reads as two defects.
+                continue
+            if policy.allowed_resolvers is not None and resolver not in policy.allowed_resolvers:
+                admitted = sorted(policy.allowed_resolvers)
+                rejections.append(
+                    Rejection(
+                        rule="unadmitted-resolver",
+                        tree="raw",
+                        path=path,
+                        detail=(
+                            f"interpolation ${{{expression}}} calls resolver {resolver!r}, which "
+                            f"is not in this schema's closed set of admitted resolvers "
+                            f"({admitted or 'none'}). Resolver calls are ADMITTED, not merely "
+                            "screened: the set that can evaluate text or read process-local "
+                            "state is open-ended and grows with OmegaConf, while the set a "
+                            "study needs is small and known. Plain node references such as "
+                            "${section.key} are unaffected -- they name configuration, not a "
+                            "resolver"
+                        ),
+                    )
+                )
+                continue
     return rejections
 
 
